@@ -298,3 +298,239 @@ func TestInferClassCount_Empty(t *testing.T) {
 	result := inferClassCount(nil, 0, 0, 0)
 	assert.Equal(t, 0, result)
 }
+
+// === Uncovered parseVerifierDex paths ===
+
+func TestParseVerifierDex_MalformedChain(t *testing.T) {
+	// All offsets are NotVerifiedMarker except class 0 which is verified,
+	// but sentinel is also NotVerifiedMarker → nextValid exceeds numClass
+	classCount := 2
+	offsetTableSize := (classCount + 1) * 4
+	block := make([]byte, offsetTableSize+8) // some padding
+	// class 0: verified, pointing to data area
+	binary.LittleEndian.PutUint32(block[0:], uint32(offsetTableSize))
+	// class 1: unverified
+	binary.LittleEndian.PutUint32(block[4:], model.NotVerifiedMarker)
+	// sentinel: also unverified → chain malformed
+	binary.LittleEndian.PutUint32(block[8:], model.NotVerifiedMarker)
+
+	sectionOffset := 0
+	raw := make([]byte, sectionOffset+4+len(block))
+	// per-dex offset table: 1 entry pointing to block start
+	binary.LittleEndian.PutUint32(raw[0:], 4)
+	copy(raw[4:], block)
+
+	s := model.VdexSection{Offset: uint32(sectionOffset), Size: uint32(len(raw))}
+	_, diags := ParseVerifierSection(raw, s, nil, 1)
+
+	hasMalformed := false
+	for _, d := range diags {
+		if d.Code == model.WarnVerifierMalformedChain {
+			hasMalformed = true
+		}
+	}
+	assert.True(t, hasMalformed, "should detect malformed chain")
+}
+
+func TestParseVerifierDex_MalformedBounds(t *testing.T) {
+	// class 0 verified but offset points before block start (section-absolute 0,
+	// block starts at offset 4 → setStart=0 < blockStart=4 → malformed)
+	classCount := 1
+	offsetTableSize := (classCount + 1) * 4
+
+	block := make([]byte, offsetTableSize+4)
+	binary.LittleEndian.PutUint32(block[0:], 0) // class 0: section-absolute 0
+	binary.LittleEndian.PutUint32(block[4:], uint32(offsetTableSize))
+
+	sectionOffset := 0
+	raw := make([]byte, sectionOffset+4+len(block))
+	binary.LittleEndian.PutUint32(raw[0:], 4) // block at offset 4
+	copy(raw[4:], block)
+
+	// Provide dex context with classCount=1 to skip DM inference
+	dexCtx := []*model.DexContext{{Rep: model.DexReport{ClassDefs: 1}}}
+	s := model.VdexSection{Offset: uint32(sectionOffset), Size: uint32(len(raw))}
+	_, diags := ParseVerifierSection(raw, s, dexCtx, 1)
+
+	hasBounds := false
+	for _, d := range diags {
+		if d.Code == model.WarnVerifierMalformedBounds {
+			hasBounds = true
+		}
+	}
+	assert.True(t, hasBounds, "should detect malformed bounds")
+}
+
+func TestParseVerifierDex_InvalidLEB128(t *testing.T) {
+	// Build a block with invalid LEB128 in pairs data
+	classCount := 1
+	offsetTableSize := (classCount + 1) * 4
+
+	// Invalid LEB128: 5 continuation bytes (0x80) without termination
+	badLEB := []byte{0x80, 0x80, 0x80, 0x80, 0x80, 0x80}
+
+	block := make([]byte, offsetTableSize)
+	binary.LittleEndian.PutUint32(block[0:], uint32(offsetTableSize))                  // class 0 offset
+	binary.LittleEndian.PutUint32(block[4:], uint32(offsetTableSize+len(badLEB)))       // sentinel
+	block = append(block, badLEB...)
+	// pad + extra strings count = 0
+	for len(block)%4 != 0 {
+		block = append(block, 0)
+	}
+	block = append(block, 0, 0, 0, 0) // numStrings=0
+
+	sectionOffset := 0
+	raw := make([]byte, sectionOffset+4+len(block))
+	binary.LittleEndian.PutUint32(raw[0:], 4)
+	copy(raw[4:], block)
+
+	s := model.VdexSection{Offset: uint32(sectionOffset), Size: uint32(len(raw))}
+	_, diags := ParseVerifierSection(raw, s, nil, 1)
+
+	hasLEB := false
+	for _, d := range diags {
+		if d.Code == model.WarnVerifierInvalidLEB128 {
+			hasLEB = true
+		}
+	}
+	assert.True(t, hasLEB, "should detect invalid LEB128")
+}
+
+func TestParseVerifierDex_ExtraStringsTruncated(t *testing.T) {
+	// Build block with pairs but extra strings table that exceeds section
+	classCount := 1
+	offsetTableSize := (classCount + 1) * 4
+
+	block := make([]byte, offsetTableSize)
+	// class 0 unverified
+	binary.LittleEndian.PutUint32(block[0:], model.NotVerifiedMarker)
+	binary.LittleEndian.PutUint32(block[4:], uint32(offsetTableSize)) // sentinel
+
+	// pad to 4-byte align
+	for len(block)%4 != 0 {
+		block = append(block, 0)
+	}
+	// numStrings = 999 (way more than available)
+	buf := make([]byte, 4)
+	binary.LittleEndian.PutUint32(buf, 999)
+	block = append(block, buf...)
+
+	sectionOffset := 0
+	raw := make([]byte, sectionOffset+4+len(block))
+	binary.LittleEndian.PutUint32(raw[0:], 4)
+	copy(raw[4:], block)
+
+	s := model.VdexSection{Offset: uint32(sectionOffset), Size: uint32(len(raw))}
+	_, diags := ParseVerifierSection(raw, s, nil, 1)
+
+	hasTrunc := false
+	for _, d := range diags {
+		if d.Code == model.WarnVerifierExtrasTruncated {
+			hasTrunc = true
+		}
+	}
+	assert.True(t, hasTrunc, "should detect truncated extra strings table")
+}
+
+func TestParseVerifierDex_ExtraStringInvalidOffset(t *testing.T) {
+	// Build block with 1 extra string whose offset points outside section
+	classCount := 1
+	offsetTableSize := (classCount + 1) * 4
+
+	block := make([]byte, offsetTableSize)
+	binary.LittleEndian.PutUint32(block[0:], model.NotVerifiedMarker)
+	binary.LittleEndian.PutUint32(block[4:], uint32(offsetTableSize))
+
+	for len(block)%4 != 0 {
+		block = append(block, 0)
+	}
+	// numStrings = 1
+	buf := make([]byte, 4)
+	binary.LittleEndian.PutUint32(buf, 1)
+	block = append(block, buf...)
+	// string offset = 0xFFFF (way outside section)
+	off := make([]byte, 4)
+	binary.LittleEndian.PutUint32(off, 0xFFFF)
+	block = append(block, off...)
+
+	sectionOffset := 0
+	raw := make([]byte, sectionOffset+4+len(block))
+	binary.LittleEndian.PutUint32(raw[0:], 4)
+	copy(raw[4:], block)
+
+	s := model.VdexSection{Offset: uint32(sectionOffset), Size: uint32(len(raw))}
+	report, diags := ParseVerifierSection(raw, s, nil, 1)
+
+	hasInvalid := false
+	for _, d := range diags {
+		if d.Code == model.WarnVerifierExtraInvalid {
+			hasInvalid = true
+		}
+	}
+	assert.True(t, hasInvalid, "should detect invalid extra string offset")
+	require.NotEmpty(t, report.Dexes)
+	assert.Equal(t, 1, report.Dexes[0].ExtraStringCount)
+}
+
+func TestParseVerifierDex_NoExtraStrings_EarlyReturn(t *testing.T) {
+	// Block with class data but section ends before extra strings count
+	classCount := 1
+	offsetTableSize := (classCount + 1) * 4
+
+	block := make([]byte, offsetTableSize)
+	binary.LittleEndian.PutUint32(block[0:], model.NotVerifiedMarker)
+	binary.LittleEndian.PutUint32(block[4:], uint32(offsetTableSize))
+	// No extra strings area — section ends right after offset table
+
+	sectionOffset := 0
+	raw := make([]byte, sectionOffset+4+len(block))
+	binary.LittleEndian.PutUint32(raw[0:], 4)
+	copy(raw[4:], block)
+
+	s := model.VdexSection{Offset: uint32(sectionOffset), Size: uint32(len(raw))}
+	report, diags := ParseVerifierSection(raw, s, nil, 1)
+
+	// Should return without error, ExtraStringCount = 0
+	require.NotEmpty(t, report.Dexes)
+	assert.Equal(t, 0, report.Dexes[0].ExtraStringCount)
+	// No truncation diag since section cleanly ends
+	for _, d := range diags {
+		assert.NotEqual(t, model.WarnVerifierExtrasTruncated, d.Code)
+	}
+}
+
+func TestParseVerifierDex_DMInference(t *testing.T) {
+	// No dex context (DM format) — should infer class count and emit diagnostic
+	classCount := 2
+	offsetTableSize := (classCount + 1) * 4
+
+	block := make([]byte, offsetTableSize+8)
+	binary.LittleEndian.PutUint32(block[0:], model.NotVerifiedMarker) // class 0
+	binary.LittleEndian.PutUint32(block[4:], model.NotVerifiedMarker) // class 1
+	binary.LittleEndian.PutUint32(block[8:], uint32(offsetTableSize)) // sentinel
+	// extra strings: count=0
+	for len(block)%4 != 0 {
+		block = append(block, 0)
+	}
+	block = append(block, 0, 0, 0, 0)
+
+	sectionOffset := 0
+	raw := make([]byte, sectionOffset+4+len(block))
+	binary.LittleEndian.PutUint32(raw[0:], 4)
+	copy(raw[4:], block)
+
+	s := model.VdexSection{Offset: uint32(sectionOffset), Size: uint32(len(raw))}
+	// nil dexes = DM format, expected=1
+	report, diags := ParseVerifierSection(raw, s, nil, 1)
+
+	hasInferred := false
+	for _, d := range diags {
+		if d.Code == model.WarnVerifierInferredCount {
+			hasInferred = true
+			assert.Contains(t, d.Hint, "heuristic")
+		}
+	}
+	assert.True(t, hasInferred, "should emit DM inference diagnostic")
+	require.NotEmpty(t, report.Dexes)
+	assert.Equal(t, 2, report.Dexes[0].UnverifiedClasses)
+}
