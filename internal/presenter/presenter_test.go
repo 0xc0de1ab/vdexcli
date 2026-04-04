@@ -564,3 +564,263 @@ func TestWriteJSON_NoDiagnosticsWhenEmpty(t *testing.T) {
 	// diagnostics field omitted (omitempty)
 	assert.NotContains(t, buf.String(), `"diagnostics"`)
 }
+
+// === WriteDiffText tests (was 0% coverage) ===
+
+func TestWriteDiffText_Identical(t *testing.T) {
+	SetColor(false)
+	defer SetColor(false)
+	d := model.VdexDiff{
+		FileA: "a.vdex", FileB: "b.vdex", SizeA: 100, SizeB: 100,
+		Summary: model.DiffSummary{Identical: true},
+	}
+	var buf bytes.Buffer
+	WriteDiffText(&buf, d)
+	assert.Contains(t, buf.String(), "identical")
+	assert.Contains(t, buf.String(), "a.vdex")
+	assert.Contains(t, buf.String(), "b.vdex")
+}
+
+func TestWriteDiffText_AllSectionsChanged(t *testing.T) {
+	SetColor(false)
+	defer SetColor(false)
+	d := model.VdexDiff{
+		FileA: "a.vdex", FileB: "b.vdex", SizeA: 100, SizeB: 200,
+		HeaderChanged: true,
+		HeaderDiff:    &model.HeaderDiff{MagicA: "vdex", MagicB: "vdex", VersionA: "027", VersionB: "028"},
+		SectionDiffs:  []model.SectionDiff{{Name: "kVerifierDepsSection", SizeA: 28, SizeB: 100, SizeDelta: 72}},
+		ChecksumDiff:  &model.ChecksumDiff{CountA: 1, CountB: 2, Changed: []int{0}, AddedB: 1},
+		DexDiffs: []model.DexFileDiff{
+			{Index: 0, Status: "modified", ChecksumA: 0xAA, ChecksumB: 0xBB, ClassDefsA: 3, ClassDefsB: 5},
+			{Index: 1, Status: "added", ChecksumB: 0xCC, ClassDefsB: 2},
+			{Index: 2, Status: "removed", ChecksumA: 0xDD, ClassDefsA: 1},
+		},
+		VerifierDiff: &model.VerifierDiffInfo{
+			TotalChanged: 5,
+			DexDiffs: []model.VerifierDexDiff{
+				{DexIndex: 0, VerifiedA: 10, VerifiedB: 15, VerifiedDelta: 5, PairsA: 20, PairsB: 25, PairsDelta: 5, ExtraStringsA: 1, ExtraStringsB: 2},
+			},
+		},
+		TypeLookupDiff: &model.TypeLookupDiffInfo{
+			DexDiffs: []model.TypeLookupDexDiff{
+				{DexIndex: 0, BucketsA: 8, BucketsB: 16, EntriesA: 6, EntriesB: 10, EntriesDelta: 4},
+			},
+		},
+		Summary: model.DiffSummary{
+			SectionsChanged: 1, ChecksumsChanged: 1, DexFilesChanged: 3,
+			VerifierChanged: 5, TypeLookupChanged: 4,
+		},
+	}
+	var buf bytes.Buffer
+	WriteDiffText(&buf, d)
+	out := buf.String()
+
+	assert.Contains(t, out, "VDEX diff")
+	assert.Contains(t, out, "+100 bytes")
+	// header
+	assert.Contains(t, out, "header:")
+	assert.Contains(t, out, "027")
+	assert.Contains(t, out, "028")
+	// sections
+	assert.Contains(t, out, "kVerifierDepsSection")
+	assert.Contains(t, out, "+72")
+	// checksums
+	assert.Contains(t, out, "checksums:")
+	assert.Contains(t, out, "+1")
+	// dex files
+	assert.Contains(t, out, "modified")
+	assert.Contains(t, out, "added")
+	assert.Contains(t, out, "removed")
+	// verifier
+	assert.Contains(t, out, "verifier_deps:")
+	assert.Contains(t, out, "5 classes changed")
+	// type lookup
+	assert.Contains(t, out, "type_lookup:")
+	// summary
+	assert.Contains(t, out, "summary:")
+}
+
+func TestWriteDiffText_NegativeDelta(t *testing.T) {
+	SetColor(false)
+	defer SetColor(false)
+	d := model.VdexDiff{
+		FileA: "a.vdex", FileB: "b.vdex", SizeA: 200, SizeB: 200,
+		VerifierDiff: &model.VerifierDiffInfo{
+			TotalChanged: 1,
+			DexDiffs: []model.VerifierDexDiff{
+				{DexIndex: 0, VerifiedA: 10, VerifiedB: 5, VerifiedDelta: -5, PairsA: 20, PairsB: 15, PairsDelta: -5},
+			},
+		},
+		Summary: model.DiffSummary{VerifierChanged: 1},
+	}
+	var buf bytes.Buffer
+	WriteDiffText(&buf, d)
+	assert.Contains(t, buf.String(), "-5")
+}
+
+func TestWriteDiffText_ZeroDelta(t *testing.T) {
+	SetColor(false)
+	defer SetColor(false)
+	d := model.VdexDiff{
+		FileA: "a.vdex", FileB: "b.vdex", SizeA: 100, SizeB: 100,
+		TypeLookupDiff: &model.TypeLookupDiffInfo{
+			DexDiffs: []model.TypeLookupDexDiff{
+				{DexIndex: 0, BucketsA: 8, BucketsB: 8, EntriesA: 6, EntriesB: 6, EntriesDelta: 0},
+			},
+		},
+		Summary: model.DiffSummary{TypeLookupChanged: 0},
+	}
+	var buf bytes.Buffer
+	WriteDiffText(&buf, d)
+	assert.Contains(t, buf.String(), "+0")
+}
+
+func TestWriteDiffText_ChecksumRemoved(t *testing.T) {
+	SetColor(false)
+	defer SetColor(false)
+	d := model.VdexDiff{
+		FileA: "a.vdex", FileB: "b.vdex", SizeA: 100, SizeB: 100,
+		ChecksumDiff: &model.ChecksumDiff{CountA: 3, CountB: 1, RemovedA: 2},
+		Summary:      model.DiffSummary{ChecksumsChanged: 2},
+	}
+	var buf bytes.Buffer
+	WriteDiffText(&buf, d)
+	assert.Contains(t, buf.String(), "-2")
+}
+
+// === PrintText full path coverage ===
+
+func TestPrintText_FullReport(t *testing.T) {
+	SetColor(false)
+	defer SetColor(false)
+
+	r := sampleReport()
+	r.Dexes = []model.DexReport{{
+		Index: 0, Offset: 64, Size: 112, Magic: "dex\n", Version: "035",
+		Endian: "little-endian", Signature: "abc", ChecksumId: 0xCAFE,
+		ClassDefs: 3, StringIds: 10, TypeIds: 5, ProtoIds: 3,
+		FieldIds: 2, MethodIds: 4,
+		Classes: []string{"Lcom/Foo;", "Lcom/Bar;"},
+	}}
+	r.Verifier = &model.VerifierReport{Offset: 176, Size: 28, Dexes: []model.VerifierDexReport{
+		{DexIndex: 0, VerifiedClasses: 2, UnverifiedClasses: 1, AssignabilityPairs: 3, ExtraStringCount: 1,
+			FirstPairs: []model.VerifierPair{{ClassDefIndex: 0, Dest: "Ljava/lang/Object;", DestID: 1, Src: "Lcom/Foo;", SrcID: 2}}},
+	}}
+	r.TypeLookup = &model.TypeLookupReport{Offset: 204, Size: 32, Dexes: []model.TypeLookupDexReport{
+		{DexIndex: 0, RawSize: 32, BucketCount: 4, EntryCount: 2, NonEmptyBuckets: 2, MaxChainLen: 1, AvgChainLen: 1.0,
+			Samples:  []model.TypeLookupSample{{Bucket: 0, ClassDef: 0, Descriptor: "Lcom/Foo;", NextDelta: 0, HashBits: 3}},
+			Warnings: []string{"cycle detected"}},
+	}}
+	r.Coverage.Gaps = []model.ByteCoverageRange{{Offset: 60, Size: 4, Label: "gap/padding"}}
+
+	out := captureStdout(func() { PrintText(r) })
+
+	// dex section
+	assert.Contains(t, out, `magic="dex\n"`)
+	assert.Contains(t, out, "Lcom/Foo;")
+	assert.Contains(t, out, "...")
+	// verifier section
+	assert.Contains(t, out, "verifier_deps:")
+	assert.Contains(t, out, "Ljava/lang/Object;")
+	// type lookup section
+	assert.Contains(t, out, "type_lookup:")
+	assert.Contains(t, out, "cycle detected")
+	// coverage gaps
+	assert.Contains(t, out, "gaps:")
+	assert.Contains(t, out, "gap/padding")
+}
+
+// === WriteCoverage gaps path ===
+
+func TestWriteCoverage_WithGaps(t *testing.T) {
+	r := &model.VdexReport{
+		File: "test.vdex",
+		Coverage: &model.ByteCoverageReport{
+			FileSize: 100, ParsedBytes: 96, UnparsedBytes: 4, CoveragePercent: 96.0,
+			Ranges: []model.ByteCoverageRange{{Offset: 0, Size: 96, Label: "data"}},
+			Gaps:   []model.ByteCoverageRange{{Offset: 96, Size: 4, Label: "gap/padding"}},
+		},
+	}
+	var buf bytes.Buffer
+	WriteCoverage(&buf, r)
+	out := buf.String()
+	assert.Contains(t, out, "96.00%")
+	assert.Contains(t, out, "gaps:")
+	assert.Contains(t, out, "gap/padding")
+}
+
+func TestWriteCoverage_NilReport(t *testing.T) {
+	var buf bytes.Buffer
+	WriteCoverage(&buf, nil)
+	assert.Contains(t, buf.String(), "no coverage data")
+}
+
+func TestWriteCoverage_NilCoverage(t *testing.T) {
+	var buf bytes.Buffer
+	WriteCoverage(&buf, &model.VdexReport{File: "test.vdex"})
+	assert.Contains(t, buf.String(), "no coverage data")
+}
+
+// === Interface default impl coverage ===
+
+func TestDefaultDiffWriter(t *testing.T) {
+	SetColor(false)
+	defer SetColor(false)
+	w := DefaultDiffWriter{}
+	var buf bytes.Buffer
+	d := model.VdexDiff{
+		FileA: "a.vdex", FileB: "b.vdex", SizeA: 100, SizeB: 100,
+		Summary: model.DiffSummary{Identical: true},
+	}
+	w.WriteDiff(&buf, d)
+	assert.Contains(t, buf.String(), "identical")
+}
+
+func TestTextWriter(t *testing.T) {
+	SetColor(false)
+	defer SetColor(false)
+	w := TextWriter{}
+	old := captureStdout(func() {
+		_ = w.Write(nil, sampleReport())
+	})
+	assert.Contains(t, old, "vdex")
+}
+
+func TestSummaryLineWriter(t *testing.T) {
+	w := SummaryLineWriter{}
+	var buf bytes.Buffer
+	_ = w.Write(&buf, sampleReport())
+	assert.Contains(t, buf.String(), "status=")
+}
+
+func TestSectionsWriter(t *testing.T) {
+	w := SectionsWriter{}
+	var buf bytes.Buffer
+	_ = w.Write(&buf, sampleReport())
+	assert.Contains(t, buf.String(), "kChecksumSection")
+}
+
+func TestCoverageWriter(t *testing.T) {
+	w := CoverageWriter{}
+	var buf bytes.Buffer
+	_ = w.Write(&buf, sampleReport())
+	assert.Contains(t, buf.String(), "100.00%")
+}
+
+func TestDefaultWarningProcessor(t *testing.T) {
+	p := DefaultWarningProcessor{}
+	g := p.Group([]string{"section bad", "verifier bad"})
+	assert.Len(t, g, 2)
+	m, _ := p.StrictMatch([]string{"a", "b"}, "a")
+	assert.Len(t, m, 1)
+}
+
+func TestDefaultSummaryWriter(t *testing.T) {
+	w := DefaultSummaryWriter{}
+	var buf bytes.Buffer
+	w.WriteModify(&buf, model.ModifySummary{Status: "ok"})
+	assert.Contains(t, buf.String(), "status=ok")
+	buf.Reset()
+	w.WriteExtract(&buf, model.ExtractSummary{File: "test.vdex", Extracted: 1})
+	assert.Contains(t, buf.String(), "extracted=1")
+}
