@@ -3,7 +3,7 @@
 package model
 
 // CLIVersion is set at build time via -ldflags. Falls back to the default below.
-var CLIVersion = "0.2.1"
+var CLIVersion = "0.4.0"
 
 const (
 	VdexCurrentVersion  = "027"

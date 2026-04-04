@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.4.0 (unreleased)
+## v0.4.0 (2026-04-04)
 
 New diff command, DM format inference, structured error hints, interface-driven design.
 
@@ -67,7 +67,7 @@ cmd          32 tests    (e2e subprocess)
 
 ---
 
-## v0.3.0 (unreleased)
+## v0.3.0 (2026-04-04)
 
 Complete architectural overhaul from single-file CLI to clean multi-package Go project.
 
