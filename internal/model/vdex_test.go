@@ -155,3 +155,31 @@ func TestForJSON_OmitsEmptyHint(t *testing.T) {
 	_, hasHint := m["hint"]
 	assert.False(t, hasHint, "empty hint should not appear in ForJSON output")
 }
+
+func TestError_WithHint(t *testing.T) {
+	d := DiagFileTooSmall(5)
+	s := d.Error()
+	assert.Contains(t, s, "[ERR_FILE_TOO_SMALL]")
+	assert.Contains(t, s, "hint:")
+}
+
+func TestError_WithoutHint(t *testing.T) {
+	d := ParseDiagnostic{Code: WarnDexTruncated, Message: "test"}
+	s := d.Error()
+	assert.Contains(t, s, "[WARN_DEX_TRUNCATED]")
+	assert.NotContains(t, s, "hint:")
+}
+
+func TestSeverityString(t *testing.T) {
+	assert.Equal(t, "error", ParseDiagnostic{Severity: SeverityError}.SeverityString())
+	assert.Equal(t, "warning", ParseDiagnostic{Severity: SeverityWarning}.SeverityString())
+}
+
+func TestUnknownSectionName(t *testing.T) {
+	assert.Equal(t, "unknown(99)", UnknownSectionName(99))
+}
+
+func TestDiagSectionZeroSize_UnknownKind(t *testing.T) {
+	d := DiagSectionZeroSize(99) // unknown kind
+	assert.Contains(t, d.Message, "kind 99")
+}

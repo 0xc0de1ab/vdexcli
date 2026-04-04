@@ -218,3 +218,97 @@ func TestParse_HeaderSizeExceedsFileSize(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "header_size")
 }
+
+func TestParse_UnknownEndianTag(t *testing.T) {
+	raw := buildMinDex(0)
+	binary.LittleEndian.PutUint32(raw[0x28:], 0x99999999) // neither LE nor BE
+	ctx, _, err := Parse(raw, 0)
+	require.NoError(t, err)
+	assert.Equal(t, "big-endian", ctx.Rep.Endian) // default fallback
+}
+
+func TestParseModifiedUtf8_Unterminated(t *testing.T) {
+	// ULEB128 length=5 then data with no null terminator (all non-zero)
+	raw := make([]byte, 10)
+	binary.LittleEndian.PutUint32(raw[0:], 4) // string_id → offset 4
+	raw[4] = 5                                // ULEB128 length
+	// Fill remaining bytes with non-zero to prevent accidental null
+	for i := 5; i < len(raw); i++ {
+		raw[i] = 'A'
+	}
+	_, _, err := ParseStrings(raw, 1, 0)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unterminated")
+}
+
+func TestParseModifiedUtf8_DataBeyondEnd(t *testing.T) {
+	// ULEB128 takes all remaining bytes, no room for string data
+	raw := make([]byte, 8)
+	binary.LittleEndian.PutUint32(raw[0:], 4) // string_id → offset 4
+	raw[4] = 0x80                             // multi-byte ULEB128
+	raw[5] = 0x80
+	raw[6] = 0x01 // ends at index 7, start=7 == len(raw)-1 but raw[7] exists
+	// Actually let's make it so start >= len(raw)
+	raw2 := make([]byte, 7)
+	binary.LittleEndian.PutUint32(raw2[0:], 4)
+	raw2[4] = 0x80
+	raw2[5] = 0x01 // ULEB ends at 6, start=6, but len=7 so start < len — needs start==len
+	raw3 := make([]byte, 6)
+	binary.LittleEndian.PutUint32(raw3[0:], 4)
+	raw3[4] = 0x01 // single byte ULEB, start=5, but len=6, raw[5] exists
+	// To hit "data starts beyond end": ULEB must consume all bytes after off
+	raw4 := make([]byte, 5)
+	binary.LittleEndian.PutUint32(raw4[0:], 4)
+	raw4[4] = 0x01 // ULEB=1 byte, start=5, but len(raw4)=5, start >= len → error
+	_, _, err := ParseStrings(raw4, 1, 0)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "beyond end")
+}
+
+func TestParseSection_AutoDetectDexCount(t *testing.T) {
+	// expected=0 → auto-detect from section bounds
+	dex := buildMinDex(1)
+	raw := make([]byte, 300)
+	copy(raw[60:], dex)
+	s := model.VdexSection{Offset: 60, Size: uint32(len(dex))}
+	ctxs, _ := ParseSection(raw, s, 0) // expected=0
+	assert.Len(t, ctxs, 1)
+}
+
+func TestParseSection_FileSizeClamped(t *testing.T) {
+	// Two DEXes concatenated, but second DEX declares file_size larger than remaining section.
+	// Parse() returns effectiveFileSize=clamped, then section.go detects offset+size > end.
+	dex0 := buildMinDex(0) // 0x70 bytes
+	dex1 := buildMinDex(0)
+	// dex1 declares 0x1000 but only 0x70 bytes in section
+	binary.LittleEndian.PutUint32(dex1[0x20:], 0x1000)
+
+	sectionOff := 60
+	raw := make([]byte, sectionOff+0x70+0x70)
+	copy(raw[sectionOff:], dex0)
+	copy(raw[sectionOff+0x70:], dex1)
+	// Section covers both DEXes exactly
+	s := model.VdexSection{Offset: uint32(sectionOff), Size: uint32(0x70 + 0x70)}
+	ctxs, diags := ParseSection(raw, s, 2)
+	require.Len(t, ctxs, 2)
+	// dex1 should have a clamped or error diagnostic
+	hasDiag := false
+	for _, d := range diags {
+		if d.Code == model.WarnDexFileSizeClamped || d.Code == model.WarnDexTruncated {
+			hasDiag = true
+		}
+	}
+	assert.True(t, hasDiag, "should emit diagnostic for oversized dex file_size")
+}
+
+func TestParseClassDefs_InvalidClassIdx(t *testing.T) {
+	// class_idx points beyond type_ids → should show <invalid>
+	strs := []string{"Ljava/lang/Object;"}
+	raw := make([]byte, 40)
+	binary.LittleEndian.PutUint32(raw[0:], 0) // type_id[0]
+	binary.LittleEndian.PutUint32(raw[8:], 99) // class_def[0].class_idx=99, but only 1 type
+	classes, err := ParseClassDefs(raw, strs, 1, 0, 8, 1)
+	require.NoError(t, err)
+	require.Len(t, classes, 1)
+	assert.Contains(t, classes[0], "<invalid")
+}

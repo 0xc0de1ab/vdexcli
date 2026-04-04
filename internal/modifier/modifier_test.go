@@ -2,6 +2,7 @@ package modifier
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -301,3 +302,89 @@ func TestBuildVerifierDexBlock_ShortVerifiedArray(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "class verified array shorter")
 }
+
+// --- Default interface impls ---
+
+func TestDefaultFailureClassifier(t *testing.T) {
+	fc := DefaultFailureClassifier{}
+	s := model.ModifySummary{Status: "ok"}
+	reason := fc.Reason(s, nil, nil, nil, nil)
+	assert.Empty(t, reason)
+	cat := fc.Category(s, nil, nil, nil, nil)
+	assert.Empty(t, cat)
+}
+
+func TestDefaultFailureClassifier_WithError(t *testing.T) {
+	fc := DefaultFailureClassifier{}
+	s := model.ModifySummary{Status: "failed"}
+	reason := fc.Reason(s, fmt.Errorf("parse fail"), nil, nil, nil)
+	assert.NotEmpty(t, reason)
+	cat := fc.Category(s, fmt.Errorf("parse fail"), nil, nil, nil)
+	assert.NotEmpty(t, cat)
+}
+
+func TestDefaultPatchLoader_Validate(t *testing.T) {
+	pl := DefaultPatchLoader{}
+	// Valid patch
+	err := pl.Validate(model.VerifierPatchSpec{
+		Dexes: []model.VerifierPatchDex{{DexIndex: 0, Classes: []model.VerifierPatchClass{{ClassIndex: 0}}}},
+	})
+	assert.NoError(t, err)
+}
+
+func TestDefaultOutputWriter_WriteAtomic(t *testing.T) {
+	ow := DefaultOutputWriter{}
+	path := filepath.Join(t.TempDir(), "test.bin")
+	err := ow.WriteAtomic(path, []byte("hello"))
+	require.NoError(t, err)
+	data, _ := os.ReadFile(path)
+	assert.Equal(t, "hello", string(data))
+}
+
+func TestDefaultOutputWriter_AppendLog(t *testing.T) {
+	ow := DefaultOutputWriter{}
+	path := filepath.Join(t.TempDir(), "log.jsonl")
+	err := ow.AppendLog(path, model.ModifySummary{Status: "ok"}, nil, nil, "", "")
+	require.NoError(t, err)
+	data, _ := os.ReadFile(path)
+	assert.Contains(t, string(data), "ok")
+}
+
+func TestMakeFailureReason_StrictMatched(t *testing.T) {
+	s := model.ModifySummary{Status: "strict_failed"}
+	reason := MakeFailureReason(s, nil, nil, nil, []string{"warn1"})
+	assert.Contains(t, reason, "strict")
+	cat := MakeFailureCategory(s, nil, nil, nil, []string{"warn1"})
+	assert.Equal(t, "strict", cat)
+}
+
+func TestMakeFailureReason_CompareError(t *testing.T) {
+	s := model.ModifySummary{Status: "failed"}
+	reason := MakeFailureReason(s, nil, fmt.Errorf("compare fail"), nil, nil)
+	assert.Contains(t, reason, "compare fail")
+	cat := MakeFailureCategory(s, nil, fmt.Errorf("compare fail"), nil, nil)
+	assert.Equal(t, "compare", cat)
+}
+
+func TestMakeFailureReason_WriteError(t *testing.T) {
+	s := model.ModifySummary{Status: "failed"}
+	reason := MakeFailureReason(s, nil, nil, fmt.Errorf("write fail"), nil)
+	assert.Contains(t, reason, "write fail")
+	cat := MakeFailureCategory(s, nil, nil, fmt.Errorf("write fail"), nil)
+	assert.Equal(t, "write", cat)
+}
+
+func TestMakeFailureReason_StatusFailed_NoErrors(t *testing.T) {
+	s := model.ModifySummary{Status: "failed"}
+	reason := MakeFailureReason(s, nil, nil, nil, nil)
+	assert.Equal(t, "modify failed", reason)
+	cat := MakeFailureCategory(s, nil, nil, nil, nil)
+	assert.Equal(t, "modify", cat)
+}
+
+func TestMakeFailureReason_StatusFailed_WithSummaryError(t *testing.T) {
+	s := model.ModifySummary{Status: "failed", Errors: []string{"section too large"}}
+	reason := MakeFailureReason(s, nil, nil, nil, nil)
+	assert.Equal(t, "section too large", reason)
+}
+
