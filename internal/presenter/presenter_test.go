@@ -407,3 +407,160 @@ func TestPrintTextMeanings_Output(t *testing.T) {
 	assert.Contains(t, out, "meanings:")
 	assert.Contains(t, out, "test magic")
 }
+
+// === Scenario C: Presenter hint display ===
+
+func TestPrintGroupedDiagnostics_ShowsHints(t *testing.T) {
+	SetColor(false)
+	defer SetColor(false)
+
+	diags := []model.ParseDiagnostic{
+		{Severity: model.SeverityWarning, Category: model.CatSection, Code: model.WarnSectionZeroSize,
+			Message: "section kDexFileSection has zero size",
+			Hint:    "this section is empty; normal for DM-format VDEX"},
+		{Severity: model.SeverityWarning, Category: model.CatVerifier, Code: model.WarnVerifierBlockTruncated,
+			Message: "dex 0 verifier block truncated",
+			Hint:    "class offset table extends beyond section"},
+	}
+
+	out := captureStdout(func() { PrintGroupedDiagnostics(diags) })
+
+	// Success: grouped by category
+	assert.Contains(t, out, "section warnings (1):")
+	assert.Contains(t, out, "verifier warnings (1):")
+	// Success: messages shown
+	assert.Contains(t, out, "section kDexFileSection has zero size")
+	assert.Contains(t, out, "dex 0 verifier block truncated")
+	// Success: hints shown
+	assert.Contains(t, out, "hint:")
+	assert.Contains(t, out, "normal for DM-format")
+	assert.Contains(t, out, "class offset table extends beyond section")
+}
+
+func TestPrintGroupedDiagnostics_Empty(t *testing.T) {
+	out := captureStdout(func() { PrintGroupedDiagnostics(nil) })
+	assert.Empty(t, out)
+}
+
+func TestPrintGroupedDiagnostics_SkipsErrors(t *testing.T) {
+	SetColor(false)
+	defer SetColor(false)
+
+	diags := []model.ParseDiagnostic{
+		{Severity: model.SeverityError, Category: model.CatHeader, Code: model.ErrFileTooSmall,
+			Message: "file too small", Hint: "re-extract"},
+	}
+
+	out := captureStdout(func() { PrintGroupedDiagnostics(diags) })
+	// PrintGroupedDiagnostics only shows warnings, errors shown separately
+	assert.Empty(t, out)
+}
+
+func TestPrintGroupedDiagnostics_HintlessWarning(t *testing.T) {
+	SetColor(false)
+	defer SetColor(false)
+
+	diags := []model.ParseDiagnostic{
+		{Severity: model.SeverityWarning, Category: model.CatDex, Code: model.WarnDexTruncated,
+			Message: "dex truncated", Hint: ""},
+	}
+
+	out := captureStdout(func() { PrintGroupedDiagnostics(diags) })
+	assert.Contains(t, out, "dex truncated")
+	assert.NotContains(t, out, "hint:", "empty hint must not produce hint: line")
+}
+
+func TestPrintText_DiagnosticsPreferredOverWarnings(t *testing.T) {
+	SetColor(false)
+	defer SetColor(false)
+
+	r := sampleReport()
+	r.Diagnostics = []model.ParseDiagnostic{
+		{Severity: model.SeverityWarning, Category: model.CatSection, Code: model.WarnSectionZeroSize,
+			Message: "section kTypeLookupTableSection has zero size",
+			Hint:    "normal for DM-format VDEX"},
+	}
+	// Warnings also present (legacy)
+	r.Warnings = []string{"section kTypeLookupTableSection has zero size"}
+
+	out := captureStdout(func() { PrintText(r) })
+	// When Diagnostics present, hint should appear
+	assert.Contains(t, out, "hint:")
+	assert.Contains(t, out, "normal for DM-format")
+}
+
+func TestPrintText_ErrorDiagnosticsShowHints(t *testing.T) {
+	SetColor(false)
+	defer SetColor(false)
+
+	r := &model.VdexReport{
+		File:   "bad.vdex",
+		Size:   5,
+		Header: model.VdexHeader{Magic: "vdex", Version: "027"},
+		Diagnostics: []model.ParseDiagnostic{
+			{Severity: model.SeverityError, Category: model.CatHeader, Code: model.ErrFileTooSmall,
+				Message: "file too small for VDEX header: 5 bytes",
+				Hint:    "verify the file is a complete VDEX"},
+		},
+		Errors: []string{"file too small for VDEX header: 5 bytes"},
+	}
+
+	out := captureStdout(func() { PrintText(r) })
+	assert.Contains(t, out, "errors:")
+	assert.Contains(t, out, "file too small")
+	assert.Contains(t, out, "hint:")
+	assert.Contains(t, out, "verify the file is a complete VDEX")
+}
+
+// === Scenario C2: JSON output includes diagnostics with hints ===
+
+func TestWriteJSON_IncludesDiagnostics(t *testing.T) {
+	r := &model.VdexReport{
+		File:   "test.vdex",
+		Size:   100,
+		Header: model.VdexHeader{Magic: "vdex", Version: "027", NumSections: 4},
+		Diagnostics: []model.ParseDiagnostic{
+			model.DiagVersionMismatch("027", "999"),
+			model.DiagSectionZeroSize(1),
+		},
+		Warnings: []string{"version mismatch", "zero size"},
+	}
+
+	var buf bytes.Buffer
+	require.NoError(t, WriteJSON(&buf, r))
+	out := buf.String()
+
+	// Success: diagnostics array present in JSON with lowercase keys
+	assert.Contains(t, out, `"diagnostics"`)
+	assert.Contains(t, out, `"code"`)
+	assert.Contains(t, out, `"WARN_VERSION_MISMATCH"`)
+	assert.Contains(t, out, `"WARN_SECTION_ZERO_SIZE"`)
+
+	// Verify it's valid JSON
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &parsed))
+
+	diags, ok := parsed["diagnostics"].([]any)
+	require.True(t, ok, "diagnostics must be an array")
+	require.Len(t, diags, 2)
+
+	// First diagnostic has hint, code, category (all lowercase json keys)
+	first := diags[0].(map[string]any)
+	assert.NotEmpty(t, first["hint"], "diagnostic must include hint in JSON")
+	assert.NotEmpty(t, first["code"], "diagnostic must include code in JSON")
+	assert.NotEmpty(t, first["category"], "diagnostic must include category in JSON")
+}
+
+func TestWriteJSON_NoDiagnosticsWhenEmpty(t *testing.T) {
+	r := &model.VdexReport{
+		File:   "test.vdex",
+		Size:   100,
+		Header: model.VdexHeader{Magic: "vdex", Version: "027", NumSections: 4},
+	}
+
+	var buf bytes.Buffer
+	require.NoError(t, WriteJSON(&buf, r))
+
+	// diagnostics field omitted (omitempty)
+	assert.NotContains(t, buf.String(), `"diagnostics"`)
+}

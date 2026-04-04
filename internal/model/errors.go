@@ -24,11 +24,11 @@ const (
 
 // ParseDiagnostic is a structured finding emitted during VDEX/DEX parsing.
 type ParseDiagnostic struct {
-	Severity Severity
-	Category Category
-	Code     DiagCode
-	Message  string
-	Hint     string // Actionable suggestion for the user.
+	Severity Severity `json:"severity"`
+	Category Category `json:"category"`
+	Code     DiagCode `json:"code"`
+	Message  string   `json:"message"`
+	Hint     string   `json:"hint,omitempty"`
 }
 
 func (d ParseDiagnostic) Error() string {

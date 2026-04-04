@@ -447,3 +447,115 @@ func findSubstr(s, sub string) bool {
 	}
 	return false
 }
+
+// === Scenario B: Parser → Diagnostics propagation ===
+// Criteria: ParseVdex must populate report.Diagnostics with Code, Hint, and
+// keep Warnings/Errors in sync via AddDiag.
+
+func TestParseVdex_DiagnosticsPopulated_VersionMismatch(t *testing.T) {
+	// GIVEN: VDEX with wrong version
+	header := buildRawHeader("vdex", "999\x00", 4)
+	raw := append(header, make([]byte, 48)...)
+	tmpFile := filepath.Join(t.TempDir(), "diag_ver.vdex")
+	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
+
+	// WHEN: parse
+	report, _, _ := ParseVdex(tmpFile, false)
+
+	// THEN: Diagnostics has entry with code + hint
+	require.NotEmpty(t, report.Diagnostics)
+	found := false
+	for _, d := range report.Diagnostics {
+		if d.Code == model.WarnVersionMismatch {
+			found = true
+			assert.Contains(t, d.Hint, "v027")
+			assert.Contains(t, d.Message, "999")
+		}
+	}
+	assert.True(t, found, "WarnVersionMismatch diagnostic must be present")
+
+	// THEN: Warnings also populated (backward compat)
+	assert.NotEmpty(t, report.Warnings)
+}
+
+func TestParseVdex_DiagnosticsPopulated_SectionZeroSize(t *testing.T) {
+	// GIVEN: VDEX with empty dex section (size=0)
+	header := buildRawHeader("vdex", "027\x00", 4)
+	checksumOff := uint32(60)
+	var sectionBuf []byte
+	sectionBuf = appendSectionHeader(sectionBuf, 0, checksumOff, 4)
+	sectionBuf = appendSectionHeader(sectionBuf, 1, 0, 0) // empty dex
+	sectionBuf = appendSectionHeader(sectionBuf, 2, checksumOff+4, 0)
+	sectionBuf = appendSectionHeader(sectionBuf, 3, checksumOff+4, 0)
+	raw := append(header, sectionBuf...)
+	chk := make([]byte, 4)
+	binary.LittleEndian.PutUint32(chk, 0xBEEF)
+	raw = append(raw, chk...)
+	tmpFile := filepath.Join(t.TempDir(), "diag_zero.vdex")
+	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
+
+	// WHEN: parse
+	report, _, err := ParseVdex(tmpFile, false)
+	require.NoError(t, err)
+
+	// THEN: multiple zero-size diagnostics present with hints
+	zeroCount := 0
+	for _, d := range report.Diagnostics {
+		if d.Code == model.WarnSectionZeroSize {
+			zeroCount++
+			assert.NotEmpty(t, d.Hint)
+			assert.Contains(t, d.Message, "zero size")
+		}
+	}
+	assert.GreaterOrEqual(t, zeroCount, 1, "at least one zero-size section diagnostic expected")
+}
+
+func TestParseVdex_DiagnosticsPopulated_ErrorHasHint(t *testing.T) {
+	// GIVEN: file too small
+	raw := []byte("vdex027")
+	tmpFile := filepath.Join(t.TempDir(), "diag_small.vdex")
+	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
+
+	// WHEN: parse
+	report, _, err := ParseVdex(tmpFile, false)
+	require.Error(t, err)
+
+	// THEN: error diagnostic has hint
+	require.NotEmpty(t, report.Diagnostics)
+	assert.Equal(t, model.ErrFileTooSmall, report.Diagnostics[0].Code)
+	assert.Contains(t, report.Diagnostics[0].Hint, "truncated")
+
+	// THEN: Errors also populated
+	require.Len(t, report.Errors, 1)
+}
+
+func TestParseVdex_DiagnosticsAndWarningsInSync(t *testing.T) {
+	// GIVEN: VDEX that triggers multiple warnings
+	header := buildRawHeader("vdex", "027\x00", 4)
+	var sectionBuf []byte
+	sectionBuf = appendSectionHeader(sectionBuf, 0, 60, 5) // odd size → alignment warning
+	sectionBuf = appendSectionHeader(sectionBuf, 1, 0, 0)  // zero size
+	sectionBuf = appendSectionHeader(sectionBuf, 2, 65, 0)  // zero size
+	sectionBuf = appendSectionHeader(sectionBuf, 3, 65, 0)  // zero size
+	raw := append(header, sectionBuf...)
+	raw = append(raw, 0, 0, 0, 0, 0) // 5 bytes checksum
+	tmpFile := filepath.Join(t.TempDir(), "diag_sync.vdex")
+	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
+
+	report, _, _ := ParseVdex(tmpFile, false)
+
+	// THEN: count of warning diagnostics == count of Warnings strings
+	warnDiags := 0
+	for _, d := range report.Diagnostics {
+		if d.Severity == model.SeverityWarning {
+			warnDiags++
+		}
+	}
+	assert.Equal(t, len(report.Warnings), warnDiags,
+		"Diagnostics warning count must equal Warnings string count")
+
+	// THEN: every diagnostic has a code
+	for _, d := range report.Diagnostics {
+		assert.NotEmpty(t, d.Code, "every diagnostic must have a Code")
+	}
+}
