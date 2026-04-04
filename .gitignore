@@ -1,0 +1,19 @@
+# Binary
+vdexcli
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+/tmp/
+
+# ART reference sources (downloaded for analysis)
+art-reference/

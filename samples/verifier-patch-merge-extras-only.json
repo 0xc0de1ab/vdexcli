@@ -1,0 +1,12 @@
+{
+  "mode": "merge",
+  "dexes": [
+    {
+      "dex_index": 0,
+      "extra_strings": [
+        "Lcom/example/OnlyExtraStringA;",
+        "Lcom/example/OnlyExtraStringB;"
+      ]
+    }
+  ]
+}

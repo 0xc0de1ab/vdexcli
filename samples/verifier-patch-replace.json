@@ -1,0 +1,23 @@
+{
+  "mode": "replace",
+  "dexes": [
+    {
+      "dex_index": 0,
+      "classes": [
+        {
+          "class_index": 0,
+          "verified": true,
+          "pairs": [
+            {
+              "dest": 12,
+              "src": 13
+            }
+          ]
+        }
+      ],
+      "extra_strings": [
+        "Lcom/example/PatchedType;"
+      ]
+    }
+  ]
+}
