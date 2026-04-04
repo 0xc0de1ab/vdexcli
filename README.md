@@ -33,68 +33,121 @@ vdexcli modify --verifier-json patch.json input.vdex output.vdex
 
 ## Example Output
 
-### Text mode
+### Parsing a VDEX with embedded DEX
 
 ```
-$ vdexcli parse --show-meaning=false javalib.vdex
+$ vdexcli parse --show-meaning=false app.vdex
 
-file: javalib.vdex
-size: 5608 bytes
+file: app.vdex
+size: 204 bytes
 vdex magic="vdex" version="027" sections=4
 sections:
   kind=kChecksumSection (0) off=0x3c size=0x4
-    DEX file location checksum list (one uint32 per input dex)
-  kind=kDexFileSection (1) off=0x0 size=0x0
-    Concatenated DEX file payload
-  kind=kVerifierDepsSection (2) off=0x40 size=0xda3
-    Verifier dependency section
-  kind=kTypeLookupTableSection (3) off=0xde4 size=0x804
-    Class descriptor lookup table section
+  kind=kDexFileSection (1) off=0x40 size=0x70
+  kind=kVerifierDepsSection (2) off=0xb0 size=0x1c
+  kind=kTypeLookupTableSection (3) off=0xcc size=0x0
 checksums: 1
-  [0]=0xb767a504
-dex files: 0
-verifier_deps: off=0x40 size=0xda3
-  [dex 0] verified=0 unverified=0 pairs=0 extra_strings=0
-type_lookup: off=0xde4 size=0x804
-  [dex 0] raw=2048 buckets=256 entries=246 non_empty=246 max_chain=1 avg_chain=1.00
-byte_coverage: 5607/5608 bytes (100.0%)
+  [0]=0xcafebabe
+dex files: 1
+  [0] off=0x40 size=0x70 magic="dex\n" ver="035" endian=little-endian file_size=112
+     sha1=00000000000000000000 checksum=0xcafebabe
+     strings=0 types=0 protos=0 fields=0 methods=0 class_defs=3
+verifier_deps: off=0xb0 size=0x1c
+  [dex 0] verified=2 unverified=1 pairs=1 extra_strings=0
+    class 0: string_5(5) -> string_10(10)
+byte_coverage: 204/204 bytes (100.0%)
   0x00000000..0x0000000c      12 bytes  vdex_header
   0x0000000c..0x0000003c      48 bytes  section_headers
   0x0000003c..0x00000040       4 bytes  kChecksumSection
-  0x00000040..0x00000de3    3491 bytes  kVerifierDepsSection
-  0x00000de4..0x000015e8    2052 bytes  kTypeLookupTableSection
-  gaps:
-    0x00000de3..0x00000de4       1 bytes  gap/padding
+  0x00000040..0x000000b0     112 bytes  kDexFileSection
+  0x000000b0..0x000000cc      28 bytes  kVerifierDepsSection
 ```
 
-### JSON mode (byte coverage)
+### Pipeline: batch scan with summary
 
 ```
-$ vdexcli parse --json --show-meaning=false javalib.vdex | jq '.byte_coverage'
+$ for f in *.vdex; do vdexcli parse --format summary "$f"; done
+
+status=ok  file=base.vdex  size=524288 version=027 sections=4 checksums=3 dexes=3 warnings=0 errors=0 coverage=100.0% gaps=0
+status=warn file=app.vdex   size=204    version=027 sections=4 checksums=1 dexes=1 warnings=2 errors=0 coverage=100.0% gaps=0
 ```
 
-```json
+### Pipeline: find non-empty sections with awk
+
+```
+$ vdexcli parse --format sections app.vdex | awk -F'\t' 'NR>1 && $4>0 {printf "%-30s %s bytes\n", $2, $4}'
+
+kChecksumSection               4 bytes
+kDexFileSection                112 bytes
+kVerifierDepsSection           28 bytes
+```
+
+### Pipeline: coverage check
+
+```
+$ vdexcli parse --format coverage app.vdex
+
+file=app.vdex size=204 parsed=204 unparsed=0 coverage=100.00%
+  0x00000000      12  vdex_header
+  0x0000000c      48  section_headers
+  0x0000003c       4  kChecksumSection
+  0x00000040     112  kDexFileSection
+  0x000000b0      28  kVerifierDepsSection
+```
+
+### Extracting DEX files
+
+```
+$ vdexcli extract-dex app.vdex ./dex-out/
+extracted 1 dex files to ./dex-out/
+
+$ ls ./dex-out/
+app.vdex_0_3405691582.dex
+```
+
+### Modifying verifier deps (dry run)
+
+```
+$ cat patch.json
+{"dexes":[{"dex_index":0,"classes":[
+  {"class_index":0,"verified":false},
+  {"class_index":1,"verified":false},
+  {"class_index":2,"verified":false}]}]}
+
+$ vdexcli modify --dry-run --verifier-json patch.json app.vdex out.vdex
+modify summary: mode=replace patch_dexes=1 patch_classes=3 patch_extra_strings=0
+modify diff: classes=3 modified=2 unchanged=1 change=66.67%
+modify changed dexes: [0]
+modify status: ok
+verifier section size: old=28 new=24 delta=-4
+modify output: dry-run (no file written)
+
+$ vdexcli modify --dry-run --format json --verifier-json patch.json app.vdex out.vdex \
+    | jq '{status, modified_classes, class_change_percent}'
 {
-  "file_size": 5608,
-  "parsed_bytes": 5607,
-  "unparsed_bytes": 1,
-  "coverage_percent": 99.98,
-  "ranges": [
-    {"offset": 0, "size": 12, "label": "vdex_header"},
-    {"offset": 12, "size": 48, "label": "section_headers"},
-    {"offset": 60, "size": 4, "label": "kChecksumSection"},
-    {"offset": 64, "size": 3491, "label": "kVerifierDepsSection"},
-    {"offset": 3556, "size": 2052, "label": "kTypeLookupTableSection"}
-  ],
-  "gaps": [
-    {"offset": 3555, "size": 1, "label": "gap/padding"}
-  ]
+  "status": "ok",
+  "modified_classes": 2,
+  "class_change_percent": 66.67
 }
 ```
 
-### Error handling
+### Strict mode
 
-Corrupted or unsupported files produce clear, structured error messages:
+```
+# Passes: no warnings match the pattern
+$ vdexcli parse --strict --strict-warn "checksum" --format summary app.vdex
+status=warn file=app.vdex ...
+$ echo $?
+0
+
+# Fails: all warnings matched (no --strict-warn filter = match all)
+$ vdexcli parse --strict --format summary app.vdex
+strict mode: 2 matching warning(s): [section kind 3 has zero size ...]
+$ echo $?
+1
+```
+
+### Error handling
 
 ```
 $ vdexcli parse broken.vdex
@@ -108,6 +161,9 @@ input vdex path is required (pass as argument or use --in)
 
 $ vdexcli modify in.vdex out.vdex
 --verifier-json is required
+
+$ vdexcli modify --mode bogus --verifier-json p.json in.vdex out.vdex
+unsupported --mode "bogus"; supported: replace, merge
 ```
 
 ## Install
