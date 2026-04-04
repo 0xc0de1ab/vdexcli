@@ -240,11 +240,44 @@ $ echo $?
 1
 ```
 
+### Diagnostics with actionable hints
+
+Every warning and error includes a diagnostic code and a hint explaining what went wrong and what to do next.
+
+**Text output:**
+
+```
+$ vdexcli parse old-android10.vdex
+
+section warnings (1):
+  - section kDexFileSection has zero size
+    hint: this section is empty; normal for DM-format VDEX (no embedded DEX)
+verifier warnings (1):
+  - dex 0: inferred class_def_count=246 from verifier section (DM format)
+    hint: no embedded DEX; class count inferred from offset table heuristic — verify against source APK
+```
+
+**JSON output** — each diagnostic has `code`, `message`, `hint`:
+
+```
+$ vdexcli parse --json old-android10.vdex | jq '.diagnostics[0]'
+{
+  "severity": 1,
+  "category": "section",
+  "code": "WARN_SECTION_ZERO_SIZE",
+  "message": "section kDexFileSection has zero size",
+  "hint": "this section is empty; normal for DM-format VDEX (no embedded DEX)"
+}
+```
+
+34 diagnostic codes cover every parser failure mode — truncated files, invalid magic, corrupted sections, broken LEB128, and more. Each code maps to an actionable hint so you know whether to re-extract, check your input, or safely ignore.
+
 ### Error handling
 
 ```
 $ vdexcli parse broken.vdex
 parse error: file too small for VDEX header: 11 bytes (need >= 12)
+    hint: verify the file is a complete VDEX and not truncated during copy
 
 $ vdexcli parse nonexistent.vdex
 open nonexistent.vdex: no such file or directory
