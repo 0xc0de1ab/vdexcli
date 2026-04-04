@@ -274,6 +274,22 @@ Severity values: `0` = error (fatal), `1` = warning (parsing continues). Codes p
 
 34 diagnostic codes cover every parser failure mode — truncated files, invalid magic, corrupted sections, broken LEB128, and more. Each code maps to an actionable hint so you know whether to re-extract, check your input, or safely ignore. See [`internal/model/errors.go`](internal/model/errors.go) for the full code list.
 
+**CI integration** — filter diagnostics by code in pipelines:
+
+```bash
+# Fail CI only on checksum/verifier warnings, ignore section zero-size
+vdexcli parse --strict --strict-warn "re:(checksum|verifier)" app.vdex
+
+# Extract specific diagnostic codes from JSON
+vdexcli parse --json app.vdex | jq '[.diagnostics[] | select(.code | startswith("ERR_"))]'
+
+# Batch scan: flag files with errors
+for f in *.vdex; do
+  errs=$(vdexcli parse --json "$f" | jq '[.diagnostics[] | select(.severity==0)] | length')
+  [ "$errs" -gt 0 ] && echo "FAIL $f ($errs errors)"
+done
+```
+
 ### Error handling
 
 ```
