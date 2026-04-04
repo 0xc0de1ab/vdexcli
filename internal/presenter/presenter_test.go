@@ -425,16 +425,15 @@ func TestPrintGroupedDiagnostics_ShowsHints(t *testing.T) {
 
 	out := captureStdout(func() { PrintGroupedDiagnostics(diags) })
 
-	// Success: grouped by category
+	// Success: grouped by category with consistent formatting
 	assert.Contains(t, out, "section warnings (1):")
 	assert.Contains(t, out, "verifier warnings (1):")
-	// Success: messages shown
-	assert.Contains(t, out, "section kDexFileSection has zero size")
-	assert.Contains(t, out, "dex 0 verifier block truncated")
-	// Success: hints shown
-	assert.Contains(t, out, "hint:")
-	assert.Contains(t, out, "normal for DM-format")
-	assert.Contains(t, out, "class offset table extends beyond section")
+	// Success: warning icon
+	assert.Contains(t, out, "! section kDexFileSection has zero size")
+	assert.Contains(t, out, "! dex 0 verifier block truncated")
+	// Success: hints with ~ prefix
+	assert.Contains(t, out, "~ this section is empty; normal for DM-format")
+	assert.Contains(t, out, "~ class offset table extends beyond section")
 }
 
 func TestPrintGroupedDiagnostics_Empty(t *testing.T) {
@@ -466,8 +465,8 @@ func TestPrintGroupedDiagnostics_HintlessWarning(t *testing.T) {
 	}
 
 	out := captureStdout(func() { PrintGroupedDiagnostics(diags) })
-	assert.Contains(t, out, "dex truncated")
-	assert.NotContains(t, out, "hint:", "empty hint must not produce hint: line")
+	assert.Contains(t, out, "! dex truncated")
+	assert.NotContains(t, out, "~", "empty hint must not produce hint line")
 }
 
 func TestPrintText_DiagnosticsPreferredOverWarnings(t *testing.T) {
@@ -484,8 +483,8 @@ func TestPrintText_DiagnosticsPreferredOverWarnings(t *testing.T) {
 	r.Warnings = []string{"section kTypeLookupTableSection has zero size"}
 
 	out := captureStdout(func() { PrintText(r) })
-	// When Diagnostics present, hint should appear
-	assert.Contains(t, out, "hint:")
+	// When Diagnostics present, hint should appear with ~ prefix
+	assert.Contains(t, out, "~")
 	assert.Contains(t, out, "normal for DM-format")
 }
 
@@ -506,10 +505,9 @@ func TestPrintText_ErrorDiagnosticsShowHints(t *testing.T) {
 	}
 
 	out := captureStdout(func() { PrintText(r) })
-	assert.Contains(t, out, "errors:")
-	assert.Contains(t, out, "file too small")
-	assert.Contains(t, out, "hint:")
-	assert.Contains(t, out, "verify the file is a complete VDEX")
+	assert.Contains(t, out, "errors (1):")
+	assert.Contains(t, out, "! file too small")
+	assert.Contains(t, out, "~ verify the file is a complete VDEX")
 }
 
 // === Scenario C2: JSON output includes diagnostics with hints ===

@@ -43,14 +43,14 @@ func PrintGroupedWarnings(warnings []string) {
 		return
 	}
 	order := []string{"header", "section", "dex", "verifier", "type_lookup", "extract", "other"}
-	for _, c := range order {
-		ws, ok := grouped[c]
+	for _, cat := range order {
+		ws, ok := grouped[cat]
 		if !ok || len(ws) == 0 {
 			continue
 		}
-		fmt.Printf("%s warnings (%d):\n", c, len(ws))
+		fmt.Printf("%s\n", c(boldYlw, fmt.Sprintf("%s warnings (%d):", cat, len(ws))))
 		for _, w := range ws {
-			fmt.Printf("  - %s\n", w)
+			fmt.Printf("  %s %s\n", c(yellow, "!"), w)
 		}
 	}
 }
@@ -64,8 +64,8 @@ func PrintGroupedDiagnostics(diags []model.ParseDiagnostic) {
 		return string(d.Category)
 	})
 	order := []string{"header", "section", "checksum", "dex", "verifier", "type_lookup"}
-	for _, c := range order {
-		ds, ok := grouped[c]
+	for _, cat := range order {
+		ds, ok := grouped[cat]
 		if !ok || len(ds) == 0 {
 			continue
 		}
@@ -73,18 +73,14 @@ func PrintGroupedDiagnostics(diags []model.ParseDiagnostic) {
 		if len(warns) == 0 {
 			continue
 		}
-		fmt.Printf("%s warnings (%d):\n", c, len(warns))
+		fmt.Printf("%s\n", c(boldYlw, fmt.Sprintf("%s warnings (%d):", cat, len(warns))))
 		for _, d := range warns {
-			fmt.Printf("  - %s\n", d.Message)
+			fmt.Printf("  %s %s\n", c(yellow, "!"), d.Message)
 			if d.Hint != "" {
-				fmt.Printf("    %s %s\n", c_hint("hint:"), d.Hint)
+				fmt.Printf("    %s %s\n", c(dimWht, "~"), c(dimWht, d.Hint))
 			}
 		}
 	}
-}
-
-func c_hint(label string) string {
-	return c(dimWht, label)
 }
 
 func StrictMatchingWarnings(warnings []string, filter string) ([]string, []string) {
@@ -197,7 +193,7 @@ func PrintText(r *model.VdexReport) {
 				fmt.Printf("    bucket=%d class=%d desc=%s next=%d hashbits=%d\n", s.Bucket, s.ClassDef, s.Descriptor, s.NextDelta, s.HashBits)
 			}
 			for _, w := range d.Warnings {
-				fmt.Printf("    warn: %s\n", w)
+				fmt.Printf("    %s %s\n", c(yellow, "!"), w)
 			}
 		}
 	}
@@ -222,14 +218,13 @@ func PrintText(r *model.VdexReport) {
 		PrintGroupedWarnings(r.Warnings)
 	}
 	if len(r.Errors) > 0 {
-		fmt.Println("errors:")
+		fmt.Printf("%s\n", c(boldRed, fmt.Sprintf("errors (%d):", len(r.Errors))))
 		for _, e := range r.Errors {
-			fmt.Printf("  ! %s\n", e)
+			fmt.Printf("  %s %s\n", c(red, "!"), e)
 		}
-		// Show hints for error diagnostics
 		for _, d := range r.Diagnostics {
 			if d.Severity == model.SeverityError && d.Hint != "" {
-				fmt.Printf("    %s %s\n", c_hint("hint:"), d.Hint)
+				fmt.Printf("    %s %s\n", c(dimWht, "~"), c(dimWht, d.Hint))
 			}
 		}
 	}
