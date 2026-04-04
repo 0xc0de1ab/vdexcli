@@ -59,6 +59,9 @@ jobs:
           SUFFIX: ${{ matrix.suffix }}
         run: |
           cd build/$GOOS-$GOARCH/release
+          if [ -n "$SUFFIX" ] && [ ! -f "vdexcli${SUFFIX}" ]; then
+            mv vdexcli "vdexcli${SUFFIX}"
+          fi
           ARCHIVE="vdexcli-${GITHUB_REF_NAME}-${GOOS}-${GOARCH}"
           if [ "$GOOS" = "windows" ]; then
             zip "${ARCHIVE}.zip" vdexcli${SUFFIX}

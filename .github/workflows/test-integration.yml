@@ -24,6 +24,6 @@ jobs:
         run: go test -v -count=1 -timeout 300s ./...
       - name: Coverage report
         run: |
-          go test -coverprofile=coverage.out ./internal/parser/ ./internal/extractor/ ./cmd/
+          go test -coverprofile=coverage.out ./internal/binutil/ ./internal/parser/ ./internal/modifier/ ./internal/extractor/
           echo "--- Per-package coverage ---"
-          go tool cover -func=coverage.out | grep -E 'total:|parser|extractor|cmd'
+          go tool cover -func=coverage.out | grep -E 'total:|binutil|parser|modifier|extractor'

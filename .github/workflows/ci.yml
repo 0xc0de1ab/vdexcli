@@ -32,9 +32,11 @@ jobs:
       - name: Install zstd
         run: sudo apt-get install -y zstd
       - name: Run tests
-        run: go test -v -count=1 -coverprofile=coverage.out ./...
-      - name: Coverage summary
-        run: go tool cover -func=coverage.out | tail -1
+        run: go test -v -count=1 ./...
+      - name: Coverage (testable packages)
+        run: |
+          go test -coverprofile=coverage.out ./internal/binutil/ ./internal/parser/ ./internal/modifier/ ./internal/extractor/
+          go tool cover -func=coverage.out | tail -1
       - name: Upload coverage
         if: github.event_name == 'push'
         uses: actions/upload-artifact@v4
