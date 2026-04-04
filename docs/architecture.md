@@ -14,12 +14,12 @@
 ```mermaid
 graph TD
     main["main.go<br/>(7줄)"]
-    cmd["cmd/<br/>cobra 커맨드 레이���<br/>(777줄)"]
+    cmd["cmd/<br/>cobra 커맨드 레이���<br/>(791줄)"]
     parser["internal/parser<br/>VDEX 컨테이너 파싱<br/>(815줄)"]
     dex["internal/dex<br/>DEX 포맷 파싱<br/>(253줄)"]
-    modifier["internal/modifier<br/>verifier 섹션 수정<br/>(714줄)"]
+    modifier["internal/modifier<br/>verifier 섹션 수정<br/>(721줄)"]
     extractor["internal/extractor<br/>DEX 추출<br/>(224줄)"]
-    presenter["internal/presenter<br/>출력 포맷팅<br/>(374줄)"]
+    presenter["internal/presenter<br/>출력 포맷팅 + 색상<br/>(517줄)"]
     model["internal/model<br/>공유 타입 + 상수 + 진단<br/>(490줄)"]
     binutil["internal/binutil<br/>바이너리 I/O<br/>(86줄)"]
 
@@ -173,14 +173,15 @@ type DexExtractor interface {
 
 구현체: `OSFileWriter` (실제 파일시스템), `TemplateRenderer` (브레이스 템플릿), `Extractor` (조합)
 
-### internal/presenter (374줄, 2 파일)
+### internal/presenter (517줄, 3 파일)
 
-출력 포맷팅. 6개 출력 모드를 지원한다.
+출력 포맷팅. 7개 출력 모드와 ANSI 색상을 지원한다.
 
 | 파일 | 줄 | 역할 |
 |------|---:|------|
 | presenter.go | 257 | `PrintText()`, `PrintTextMeanings()`, `PrintGroupedWarnings()`, `StrictMatchingWarnings()` |
-| format.go | 117 | `WriteJSON()`, `WriteJSONL()`, `WriteSummary()`, `WriteSections()`, `WriteCoverage()`, `ValidateFormat()` |
+| format.go | 219 | `WriteJSON()`, `WriteJSONL()`, `WriteSummary()`, `WriteSections()`, `WriteCoverage()`, `WriteTable()`, `ValidateFormat()` |
+| color.go | 41 | ANSI 색상 헬퍼, 터미널 자동 감지 (`golang.org/x/term`), `--color` 플래그 지원 |
 
 ## 데이터 흐름
 
@@ -264,6 +265,9 @@ sequenceDiagram
 | summary | `WriteSummary()` | `key=value` 한 줄, CI 게이트 |
 | sections | `WriteSections()` | TSV 테이블, `awk`/`grep` |
 | coverage | `WriteCoverage()` | 바이트 커버리지 전용 |
+| table | `WriteTable()` | 정렬 테이블 + ANSI 색상 (터미널용) |
+
+`--color auto|always|never` 플래그로 색상을 제어한다. `auto`(기본)는 `golang.org/x/term`으로 터미널을 감지한다.
 
 ## 진단 체계
 
@@ -284,23 +288,28 @@ type ParseDiagnostic struct {
 
 | 패키지 | 파일 | 테스트 수 | 방식 |
 |--------|------|----------|------|
+| cmd | e2e_test.go | 32 | subprocess 기반 바이너리 실행, 전 커맨드/포맷 검증 |
 | cmd | integration_test.go | 3 | 합성 VDEX + 실제 Android 16 VDEX 166개 |
-| internal/parser | parser_test.go | 23 | 합성 바이너리, 엣지 케이스, 진단 코드 |
+| internal/parser | parser_test.go | 20 | 헤더/섹션/체크섬/진단코드 |
+| internal/parser | verifier_test.go | 9 | verifier section 파싱, 문자열 해석 |
+| internal/parser | typelookup_test.go | 9 | type lookup 해시 테이블, 체인 통계 |
+| internal/parser | coverage_test.go | 7 | 바이트 커버리지 gap/trailing/overlap |
+| internal/parser | meanings_test.go | 6 | 필드 의미 설명 완전성 |
 | internal/extractor | extractor_test.go | 9 | mock FileWriter/NameRenderer, 인터페이스 검증 |
 
-총 **36개 테스트 케이스** (subtests 포함).
+총 **98개 테스트** (subtests 포함, 4개 패키지).
 
 ## 줄 수 요약
 
 | 레이어 | 패키지 | 줄 |
 |--------|--------|---:|
 | Entry point | main.go | 7 |
-| CLI | cmd/ | 777 |
+| CLI | cmd/ | 791 |
 | VDEX 파싱 | parser/ | 815 |
 | DEX 파싱 | dex/ | 253 |
-| Verifier 수정 | modifier/ | 714 |
+| Verifier 수정 | modifier/ | 721 |
 | DEX 추출 | extractor/ | 224 |
-| 출력 포맷 | presenter/ | 374 |
+| 출력 포맷 + 색상 | presenter/ | 517 |
 | 공유 타입 | model/ | 490 |
 | 바이너리 유틸 | binutil/ | 86 |
-| **합계** | | **3,740** |
+| **합계** | | **3,904** |
