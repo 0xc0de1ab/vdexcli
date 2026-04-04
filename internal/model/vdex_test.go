@@ -183,3 +183,13 @@ func TestDiagSectionZeroSize_UnknownKind(t *testing.T) {
 	d := DiagSectionZeroSize(99) // unknown kind
 	assert.Contains(t, d.Message, "kind 99")
 }
+
+func TestSectionLabel_UnknownKind(t *testing.T) {
+	d := DiagSectionExceedsFile(99, 0x100, 0x200)
+	assert.Contains(t, d.Message, "kind(99)")
+}
+
+func TestSectionLabel_KnownKind(t *testing.T) {
+	d := DiagSectionExceedsFile(SectionChecksum, 0x100, 0x200)
+	assert.Contains(t, d.Message, "kChecksumSection")
+}

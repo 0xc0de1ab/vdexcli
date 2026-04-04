@@ -285,6 +285,25 @@ func TestExtract_EmptyDexes(t *testing.T) {
 	assert.Equal(t, 0, res.Extracted)
 }
 
+func TestExtractor_RendererWarningDuringExtract(t *testing.T) {
+	// Renderer returns warnMsg → Extract should collect it in res.Warnings
+	fs := newMockFS()
+	renderer := &warnRenderer{}
+	ext := &Extractor{FS: fs, Renderer: renderer}
+	dexes := []model.DexReport{{Index: 0, Offset: 0, Size: 10}}
+	res, err := ext.Extract("app.vdex", make([]byte, 64), dexes, "/out", Options{})
+	require.NoError(t, err)
+	assert.Equal(t, 1, res.Extracted)
+	assert.NotEmpty(t, res.Warnings)
+	assert.Contains(t, res.Warnings[0], "renderer warning")
+}
+
+type warnRenderer struct{}
+
+func (warnRenderer) Render(_, _ string, d model.DexReport) (string, string, error) {
+	return fmt.Sprintf("dex_%d.dex", d.Index), "renderer warning", nil
+}
+
 func TestTemplateRenderer_UnclosedBrace(t *testing.T) {
 	r := &TemplateRenderer{}
 	d := model.DexReport{Index: 0}

@@ -846,6 +846,16 @@ func TestWriteTable_LowCoverageRedPath(t *testing.T) {
 	assert.Contains(t, buf.String(), "80.0%")
 }
 
+func TestWriteTable_MediumCoverageYellowPath(t *testing.T) {
+	SetColor(false)
+	defer SetColor(false)
+	r := sampleReport()
+	r.Coverage.CoveragePercent = 95.0 // 90 <= 95 < 99.9 → yellow path
+	var buf bytes.Buffer
+	WriteTable(&buf, r)
+	assert.Contains(t, buf.String(), "95.0%")
+}
+
 func TestPrintTextMeanings_Nil(t *testing.T) {
 	out := captureStdout(func() { PrintTextMeanings(nil) })
 	assert.Empty(t, out)
