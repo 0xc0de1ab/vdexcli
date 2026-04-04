@@ -107,11 +107,113 @@ func lo_ternary(cond bool, a, b string) string {
 }
 
 // ValidateFormat checks if a format string is supported.
+// WriteTable writes a formatted, aligned table of sections to w.
+func WriteTable(w io.Writer, r *model.VdexReport) {
+	if r == nil {
+		return
+	}
+
+	fmt.Fprintf(w, "%s\n", c(bold, fmt.Sprintf("VDEX %s  v%s  %d bytes", r.Header.Magic, r.Header.Version, r.Size)))
+	fmt.Fprintln(w)
+
+	// Section table
+	fmt.Fprintf(w, "  %s  %-28s  %10s  %10s\n",
+		c(dim, "KIND"), c(dim, "NAME"), c(dim, "OFFSET"), c(dim, "SIZE"))
+	fmt.Fprintf(w, "  %s  %s  %s  %s\n",
+		c(dim, "----"), c(dim, "----------------------------"), c(dim, "----------"), c(dim, "----------"))
+	for _, s := range r.Sections {
+		sizeStr := fmt.Sprintf("%d", s.Size)
+		if s.Size == 0 {
+			sizeStr = c(dim, "0")
+		}
+		fmt.Fprintf(w, "  %4d  %-28s  %#10x  %10s\n", s.Kind, s.Name, s.Offset, sizeStr)
+	}
+	fmt.Fprintln(w)
+
+	// Checksums
+	if len(r.Checksums) > 0 {
+		fmt.Fprintf(w, "%s %d\n", c(bold, "checksums:"), len(r.Checksums))
+		for i, v := range r.Checksums {
+			fmt.Fprintf(w, "  [%d] %s\n", i, c(cyan, fmt.Sprintf("%#x", v)))
+		}
+		fmt.Fprintln(w)
+	}
+
+	// DEX files
+	if len(r.Dexes) > 0 {
+		fmt.Fprintf(w, "%s %d\n", c(bold, "dex files:"), len(r.Dexes))
+		for _, d := range r.Dexes {
+			magic := strings.ReplaceAll(d.Magic, "\n", "\\n")
+			sigPreview := d.Signature
+			if len(sigPreview) > 20 {
+				sigPreview = sigPreview[:20] + "..."
+			}
+			fmt.Fprintf(w, "  [%d] %s off=%#x size=%d endian=%s sha1=%s\n",
+				d.Index, c(boldCyn, magic+d.Version), d.Offset, d.Size, d.Endian, c(dim, sigPreview))
+			fmt.Fprintf(w, "       strings=%d types=%d protos=%d fields=%d methods=%d %s=%d\n",
+				d.StringIds, d.TypeIds, d.ProtoIds, d.FieldIds, d.MethodIds,
+				c(bold, "class_defs"), d.ClassDefs)
+		}
+		fmt.Fprintln(w)
+	}
+
+	// Verifier
+	if r.Verifier != nil {
+		fmt.Fprintf(w, "%s off=%#x size=%d\n", c(bold, "verifier_deps:"), r.Verifier.Offset, r.Verifier.Size)
+		for _, d := range r.Verifier.Dexes {
+			verified := c(green, fmt.Sprintf("%d", d.VerifiedClasses))
+			unverified := fmt.Sprintf("%d", d.UnverifiedClasses)
+			if d.UnverifiedClasses > 0 {
+				unverified = c(yellow, unverified)
+			}
+			fmt.Fprintf(w, "  [dex %d] verified=%s unverified=%s pairs=%d extras=%d\n",
+				d.DexIndex, verified, unverified, d.AssignabilityPairs, d.ExtraStringCount)
+		}
+		fmt.Fprintln(w)
+	}
+
+	// Coverage
+	if r.Coverage != nil {
+		cov := r.Coverage
+		pctStr := fmt.Sprintf("%.1f%%", cov.CoveragePercent)
+		if cov.CoveragePercent >= 99.9 {
+			pctStr = c(boldGrn, pctStr)
+		} else if cov.CoveragePercent >= 90 {
+			pctStr = c(boldYlw, pctStr)
+		} else {
+			pctStr = c(boldRed, pctStr)
+		}
+		fmt.Fprintf(w, "%s %d/%d bytes (%s)\n", c(bold, "coverage:"), cov.ParsedBytes, cov.FileSize, pctStr)
+		if len(cov.Gaps) > 0 {
+			for _, g := range cov.Gaps {
+				fmt.Fprintf(w, "  %s %#x..%#x (%d bytes)\n", c(yellow, "gap"), g.Offset, g.Offset+g.Size, g.Size)
+			}
+		}
+		fmt.Fprintln(w)
+	}
+
+	// Warnings
+	if len(r.Warnings) > 0 {
+		fmt.Fprintf(w, "%s %d\n", c(boldYlw, "warnings:"), len(r.Warnings))
+		for _, w2 := range r.Warnings {
+			fmt.Fprintf(w, "  %s %s\n", c(yellow, "!"), w2)
+		}
+		fmt.Fprintln(w)
+	}
+	// Errors
+	if len(r.Errors) > 0 {
+		fmt.Fprintf(w, "%s %d\n", c(boldRed, "errors:"), len(r.Errors))
+		for _, e := range r.Errors {
+			fmt.Fprintf(w, "  %s %s\n", c(red, "!"), e)
+		}
+	}
+}
+
 func ValidateFormat(f string) error {
 	switch strings.ToLower(f) {
-	case "", "text", "json", "jsonl", "summary", "sections", "coverage":
+	case "", "text", "json", "jsonl", "summary", "sections", "coverage", "table":
 		return nil
 	default:
-		return fmt.Errorf("unsupported --format %q; supported: text, json, jsonl, summary, sections, coverage", f)
+		return fmt.Errorf("unsupported --format %q; supported: text, json, jsonl, summary, sections, coverage, table", f)
 	}
 }

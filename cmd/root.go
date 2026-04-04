@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/0xc0de1ab/vdexcli/internal/model"
+	"github.com/0xc0de1ab/vdexcli/internal/presenter"
 	"github.com/spf13/cobra"
 )
 
@@ -19,12 +20,14 @@ const (
 	FormatSummary  OutputFormat = "summary"
 	FormatSections OutputFormat = "sections"
 	FormatCoverage OutputFormat = "coverage"
+	FormatTable    OutputFormat = "table"
 )
 
 // Shared flags — truly global (applicable to all subcommands).
 var (
 	flagJSON   bool
 	flagFormat string
+	flagColor  string
 )
 
 // Flags shared by parse, extract-dex, and modify (not dump/version).
@@ -72,6 +75,14 @@ func Execute() {
 	rootCmd.SetVersionTemplate("vdexcli version {{.Version}}\n")
 	rootCmd.SilenceUsage = true
 	rootCmd.SilenceErrors = true
+	rootCmd.PersistentPreRun = func(_ *cobra.Command, _ []string) {
+		switch flagColor {
+		case "always":
+			presenter.SetColor(true)
+		case "never":
+			presenter.SetColor(false)
+		}
+	}
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -83,7 +94,8 @@ func init() {
 	// Truly global: output format applies to every subcommand.
 	pf := rootCmd.PersistentFlags()
 	pf.BoolVar(&flagJSON, "json", false, "shorthand for --format json")
-	pf.StringVar(&flagFormat, "format", "", "output format: text, json, jsonl, summary, sections, coverage")
+	pf.StringVar(&flagFormat, "format", "", "output format: text, json, jsonl, summary, sections, coverage, table")
+	pf.StringVar(&flagColor, "color", "auto", "color output: auto, always, never")
 
 	// Shared by commands that process VDEX files (parse, extract-dex, modify).
 	// Registered on root so they work for the root-as-parse shorthand.

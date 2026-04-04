@@ -115,6 +115,8 @@ func renderParseOutput(report *model.VdexReport) error {
 		presenter.WriteSections(w, report)
 	case FormatCoverage:
 		presenter.WriteCoverage(w, report)
+	case FormatTable:
+		presenter.WriteTable(w, report)
 	default:
 		presenter.PrintText(report)
 	}
