@@ -2,6 +2,7 @@ package parser
 
 import (
 	"encoding/binary"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -161,4 +162,77 @@ func TestParseTypeLookupSection_MultipleDexes(t *testing.T) {
 	assert.Equal(t, 1, report.Dexes[0].BucketCount)
 	assert.Equal(t, 1, report.Dexes[1].DexIndex)
 	assert.Equal(t, 2, report.Dexes[1].BucketCount)
+}
+
+func TestParseTypeLookupDex_EmptyAfterAlignment(t *testing.T) {
+	// 7 bytes → after %8 trim → 0 bytes → "empty table"
+	raw := make([]byte, 7)
+	for i := range raw {
+		raw[i] = 0xFF
+	}
+	s := model.VdexSection{Offset: 0, Size: uint32(4 + len(raw))}
+	section := make([]byte, 4+len(raw))
+	binary.LittleEndian.PutUint32(section[0:], uint32(len(raw)))
+	copy(section[4:], raw)
+
+	report, _ := ParseTypeLookupSection(section, s, nil, 1)
+	require.Len(t, report.Dexes, 1)
+	assert.Contains(t, report.Dexes[0].Warnings, "payload size is not aligned to 8-byte entries; last entry may be truncated")
+	assert.Contains(t, report.Dexes[0].Warnings, "empty table")
+}
+
+func TestParseTypeLookupDex_HugeClassDefs(t *testing.T) {
+	// classDefs > MaxTypeLookupClasses → unsupported warning + clamped bits
+	entries := make([]byte, 16) // 2 buckets
+	entries = append(entries, buildTypeLookupEntry(0x100, 0x01)...)
+	entries = append(entries, buildTypeLookupEntry(0, 0)...)
+
+	section := make([]byte, 4+len(entries))
+	binary.LittleEndian.PutUint32(section[0:], uint32(len(entries)))
+	copy(section[4:], entries)
+
+	dex := &model.DexContext{Rep: model.DexReport{ClassDefs: 0xFFFF + 1}} // > MaxTypeLookupClasses
+	s := model.VdexSection{Offset: 0, Size: uint32(len(section))}
+	report, _ := ParseTypeLookupSection(section, s, []*model.DexContext{dex}, 1)
+	require.Len(t, report.Dexes, 1)
+
+	hasUnsupported := false
+	for _, w := range report.Dexes[0].Warnings {
+		if strings.Contains(w, "unsupported") {
+			hasUnsupported = true
+		}
+	}
+	assert.True(t, hasUnsupported, "should warn about unsupported class_defs_size")
+}
+
+func TestParseTypeLookupDex_CycleDetection(t *testing.T) {
+	// 2 buckets: bucket 0 has next_delta=0 (self-loop if mask allows)
+	// With classDefs=2, maskBits=1, mask=1. packed=0x02 → classIdx=(0x02>>1)&1=1, next=(0x02)&1=0
+	// next_delta=0 means end of chain. Need delta that loops back.
+	// With 2 buckets, maskBits=1. bucket 0: packed with next_delta=1 → goes to bucket 1
+	// bucket 1: packed with next_delta=1 → goes to bucket 0 → cycle!
+	entries := make([]byte, 16)
+	// bucket 0: offset=0x100, packed: classIdx=0 (<<1), next_delta=1 → packed = 0|1 = 1
+	binary.LittleEndian.PutUint32(entries[0:], 0x100)
+	binary.LittleEndian.PutUint32(entries[4:], 1) // next_delta=1
+	// bucket 1: offset=0x200, packed with next_delta=1 → loops to bucket 0
+	binary.LittleEndian.PutUint32(entries[8:], 0x200)
+	binary.LittleEndian.PutUint32(entries[12:], 1) // next_delta=1
+
+	section := make([]byte, 4+len(entries))
+	binary.LittleEndian.PutUint32(section[0:], uint32(len(entries)))
+	copy(section[4:], entries)
+
+	dex := &model.DexContext{Rep: model.DexReport{ClassDefs: 2}}
+	s := model.VdexSection{Offset: 0, Size: uint32(len(section))}
+	report, _ := ParseTypeLookupSection(section, s, []*model.DexContext{dex}, 1)
+	require.Len(t, report.Dexes, 1)
+
+	hasCycle := false
+	for _, w := range report.Dexes[0].Warnings {
+		if strings.Contains(w, "cycle") {
+			hasCycle = true
+		}
+	}
+	assert.True(t, hasCycle, "should detect cycle in lookup chain")
 }

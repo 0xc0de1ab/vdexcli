@@ -822,3 +822,71 @@ func TestDefaultSummaryWriter(t *testing.T) {
 	w.WriteExtract(&buf, model.ExtractSummary{File: "test.vdex", Extracted: 1})
 	assert.Contains(t, buf.String(), "extracted=1")
 }
+
+func TestWriteDiffText_NegativeSectionDelta(t *testing.T) {
+	SetColor(false)
+	defer SetColor(false)
+	d := model.VdexDiff{
+		FileA: "a.vdex", FileB: "b.vdex", SizeA: 200, SizeB: 200,
+		SectionDiffs: []model.SectionDiff{{Name: "kVerifierDepsSection", SizeA: 100, SizeB: 50, SizeDelta: -50}},
+		Summary:      model.DiffSummary{SectionsChanged: 1},
+	}
+	var buf bytes.Buffer
+	WriteDiffText(&buf, d)
+	assert.Contains(t, buf.String(), "-50")
+}
+
+func TestWriteTable_LowCoverageRedPath(t *testing.T) {
+	SetColor(false)
+	defer SetColor(false)
+	r := sampleReport()
+	r.Coverage.CoveragePercent = 80.0 // 80 < 90 → red path
+	var buf bytes.Buffer
+	WriteTable(&buf, r)
+	assert.Contains(t, buf.String(), "80.0%")
+}
+
+func TestPrintTextMeanings_Nil(t *testing.T) {
+	out := captureStdout(func() { PrintTextMeanings(nil) })
+	assert.Empty(t, out)
+}
+
+func TestPrintText_WithMeanings(t *testing.T) {
+	SetColor(false)
+	defer SetColor(false)
+	r := sampleReport()
+	r.Meanings = &model.ParserMeanings{
+		VdexFile: struct {
+			Magic              string "json:\"magic\""
+			Version            string "json:\"version\""
+			Sections           string "json:\"sections\""
+			Checksums          string "json:\"checksums\""
+			DexFiles           string "json:\"dex_files\""
+			Verifier           string "json:\"verifier_deps\""
+			TypeLookup         string "json:\"type_lookup\""
+			Warnings           string "json:\"warnings\""
+			WarningsByCategory string "json:\"warnings_by_category\""
+			Errors             string "json:\"errors\""
+			SchemaVer          string "json:\"schema_version\""
+		}{Magic: "4-byte identifier"},
+		SectionKind: map[string]string{"0": "checksum"},
+	}
+	out := captureStdout(func() { PrintText(r) })
+	assert.Contains(t, out, "meanings:")
+	assert.Contains(t, out, "4-byte identifier")
+}
+
+func TestStrictMatchingWarnings_EmptyRegex(t *testing.T) {
+	warnings := []string{"test"}
+	_, filterWarn := StrictMatchingWarnings(warnings, "re:")
+	require.NotEmpty(t, filterWarn)
+	assert.Contains(t, filterWarn[0], "empty expression")
+}
+
+func TestStrictMatchingWarnings_AllInvalidPatterns(t *testing.T) {
+	warnings := []string{"test"}
+	// Invalid regex that results in no valid patterns
+	matched, filterWarn := StrictMatchingWarnings(warnings, "re:[invalid")
+	assert.Empty(t, matched)
+	assert.NotEmpty(t, filterWarn)
+}

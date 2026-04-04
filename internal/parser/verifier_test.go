@@ -2,6 +2,7 @@ package parser
 
 import (
 	"encoding/binary"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -533,4 +534,112 @@ func TestParseVerifierDex_DMInference(t *testing.T) {
 	assert.True(t, hasInferred, "should emit DM inference diagnostic")
 	require.NotEmpty(t, report.Dexes)
 	assert.Equal(t, 2, report.Dexes[0].UnverifiedClasses)
+}
+
+func TestParseVerifierDex_SourceLEB128Error(t *testing.T) {
+	// dest LEB128 succeeds, but source LEB128 is invalid
+	classCount := 1
+	offsetTableSize := (classCount + 1) * 4
+	// Pair data: valid dest (0x05) + invalid source (5 continuation bytes)
+	pairData := []byte{0x05, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80}
+
+	block := make([]byte, offsetTableSize)
+	binary.LittleEndian.PutUint32(block[0:], uint32(offsetTableSize))
+	binary.LittleEndian.PutUint32(block[4:], uint32(offsetTableSize+len(pairData)))
+	block = append(block, pairData...)
+	for len(block)%4 != 0 {
+		block = append(block, 0)
+	}
+	block = append(block, 0, 0, 0, 0) // numStrings=0
+
+	raw := make([]byte, 4+len(block))
+	binary.LittleEndian.PutUint32(raw[0:], 4)
+	copy(raw[4:], block)
+
+	dexCtx := []*model.DexContext{{Rep: model.DexReport{ClassDefs: 1}}}
+	s := model.VdexSection{Offset: 0, Size: uint32(len(raw))}
+	_, diags := ParseVerifierSection(raw, s, dexCtx, 1)
+
+	hasSourceLEB := false
+	for _, d := range diags {
+		if d.Code == model.WarnVerifierInvalidLEB128 && strings.Contains(d.Message, "source") {
+			hasSourceLEB = true
+		}
+	}
+	assert.True(t, hasSourceLEB, "should detect invalid source LEB128")
+}
+
+func TestParseVerifierDex_ValidExtraStrings(t *testing.T) {
+	// Build block with 1 verified class, 0 pairs, 1 valid extra string
+	classCount := 1
+	offsetTableSize := (classCount + 1) * 4
+
+	block := make([]byte, offsetTableSize)
+	binary.LittleEndian.PutUint32(block[0:], uint32(offsetTableSize)) // class 0 → points to end of offsets (0 pairs)
+	binary.LittleEndian.PutUint32(block[4:], uint32(offsetTableSize)) // sentinel = same offset
+
+	for len(block)%4 != 0 {
+		block = append(block, 0)
+	}
+	// Extra strings: count=1
+	buf := make([]byte, 4)
+	binary.LittleEndian.PutUint32(buf, 1)
+	block = append(block, buf...)
+	// String offset: section-absolute, points to after the offset table
+	strDataOff := 4 + len(block) + 4 // block start(4) + current block + 4 bytes for this offset
+	off := make([]byte, 4)
+	binary.LittleEndian.PutUint32(off, uint32(strDataOff))
+	block = append(block, off...)
+	block = append(block, []byte("Lcom/Test;\x00")...)
+
+	raw := make([]byte, 4+len(block))
+	binary.LittleEndian.PutUint32(raw[0:], 4)
+	copy(raw[4:], block)
+
+	dexCtx := []*model.DexContext{{Rep: model.DexReport{ClassDefs: 1}}}
+	s := model.VdexSection{Offset: 0, Size: uint32(len(raw))}
+	report, _ := ParseVerifierSection(raw, s, dexCtx, 1)
+
+	require.NotEmpty(t, report.Dexes)
+	assert.Equal(t, 1, report.Dexes[0].ExtraStringCount)
+}
+
+func TestInferClassCount_DecreasingSentinel(t *testing.T) {
+	// Offsets: 20, 24, 16 (decreasing — should break)
+	section := make([]byte, 100)
+	binary.LittleEndian.PutUint32(section[0:], 20) // class 0
+	binary.LittleEndian.PutUint32(section[4:], 24) // class 1
+	binary.LittleEndian.PutUint32(section[8:], 16) // class 2: decreasing → break
+	result := inferClassCount(section, 0, 0, len(section))
+	assert.Equal(t, 1, result) // 2 entries before break, minus sentinel = 1
+}
+
+func TestInferClassCount_LargeSection(t *testing.T) {
+	// Section large enough to trigger maxEntries cap
+	size := 0x10001 * 4
+	section := make([]byte, size)
+	for i := 0; i < 0x10001; i++ {
+		binary.LittleEndian.PutUint32(section[i*4:], model.NotVerifiedMarker)
+	}
+	result := inferClassCount(section, 0, 0, size)
+	assert.Equal(t, 0x10000-1, result) // capped at 0x10000 entries, minus sentinel
+}
+
+func TestParseVerifierDex_DMInfer_ThenBlockTruncated(t *testing.T) {
+	// Section too small for inferred class count's offset table
+	section := make([]byte, 12) // only 12 bytes
+	// infer will find ~2 entries, but offset table needs (2+1)*4=12 bytes exactly
+	binary.LittleEndian.PutUint32(section[0:], model.NotVerifiedMarker)
+	binary.LittleEndian.PutUint32(section[4:], model.NotVerifiedMarker)
+	binary.LittleEndian.PutUint32(section[8:], 0xDEADBEEF) // breaks inference
+
+	raw := make([]byte, 4+len(section))
+	binary.LittleEndian.PutUint32(raw[0:], 4)
+	copy(raw[4:], section)
+
+	s := model.VdexSection{Offset: 0, Size: uint32(len(raw))}
+	_, diags := ParseVerifierSection(raw, s, nil, 1)
+
+	// Should either infer small count or hit truncation
+	_ = diags // no crash is the main assertion
 }
