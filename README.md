@@ -131,6 +131,35 @@ $ vdexcli modify --dry-run --format json --verifier-json patch.json app.vdex out
 }
 ```
 
+### Table format with color
+
+```
+$ vdexcli parse --format table --color never app.vdex
+
+VDEX vdex  v027  204 bytes
+
+  KIND  NAME                              OFFSET        SIZE
+  ----  ----------------------------  ----------  ----------
+     0  kChecksumSection                    0x3c           4
+     1  kDexFileSection                     0x40         112
+     2  kVerifierDepsSection                0xb0          28
+     3  kTypeLookupTableSection             0xcc           0
+
+checksums: 1
+  [0] 0xcafebabe
+
+dex files: 1
+  [0] dex\n035 off=0x40 size=112 endian=little-endian sha1=00000000000000000000...
+       strings=0 types=0 protos=0 fields=0 methods=0 class_defs=3
+
+verifier_deps: off=0xb0 size=28
+  [dex 0] verified=2 unverified=1 pairs=1 extras=0
+
+coverage: 204/204 bytes (100.0%)
+```
+
+When output is a terminal, fields are color-coded: green for verified, yellow for warnings, red for errors. Use `--color always` to force colors in pipes.
+
 ### Strict mode
 
 ```
@@ -195,6 +224,7 @@ vdexcli parse --format jsonl app.vdex     # single-line JSON for log pipelines
 vdexcli parse --format summary app.vdex   # one-line key=value for CI
 vdexcli parse --format sections app.vdex  # TSV section table for awk/grep
 vdexcli parse --format coverage app.vdex  # byte coverage only
+vdexcli parse --format table app.vdex     # aligned table with color
 vdexcli parse --extract-dex ./out app.vdex # extract DEX during parse
 vdexcli parse --strict --strict-warn "re:(checksum|version)" app.vdex
 ```
@@ -271,8 +301,9 @@ meanings:
 | Flag | Description |
 |------|-------------|
 | `-i, --in <path>` | Input vdex path (alternative to positional argument) |
-| `--format <mode>` | Output format: `text`, `json`, `jsonl`, `summary`, `sections`, `coverage` |
+| `--format <mode>` | Output format: `text`, `json`, `jsonl`, `summary`, `sections`, `coverage`, `table` |
 | `--json` | Shorthand for `--format json` |
+| `--color <mode>` | Color output: `auto` (default), `always`, `never` |
 | `--strict` | Treat matched warnings as fatal errors (non-zero exit) |
 | `--strict-warn <patterns>` | Comma-separated warning filters; prefix `re:` for regex |
 | `--show-meaning` | Include field descriptions in output (default: `true`) |
@@ -288,6 +319,7 @@ meanings:
 - **summary** — One-line `key=value` for CI gates and monitoring
 - **sections** — TSV table of section headers for `grep`/`awk`
 - **coverage** — Byte coverage report only
+- **table** — Aligned columns with ANSI colors (auto-detected terminal)
 
 ## Modify Flags
 
@@ -353,8 +385,8 @@ go test -v ./...
 make test
 ```
 
-The test suite includes 36 test cases across 3 packages:
-- VDEX header/section parsing edge cases and diagnostic codes (23 cases)
-- DEX extractor with mock filesystem (9 cases)
-- Verifier-deps encoding/decoding round-trip with section-absolute offsets
-- Integration tests against 166 real VDEX files from Android 16 (AOSP `android-16.0.0_r4`)
+The test suite includes 98 tests across 4 packages:
+- **cmd**: 32 e2e subprocess tests (all commands, all formats, error cases) + 3 integration tests (166 real VDEX files)
+- **internal/parser**: 51 unit tests (header, sections, verifier, typelookup, coverage, meanings, diagnostics)
+- **internal/extractor**: 9 unit tests (mock filesystem, interface verification)
+- Real VDEX integration tests against Android 16 (AOSP `android-16.0.0_r4`)
