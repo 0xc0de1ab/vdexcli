@@ -1,5 +1,72 @@
 # Changelog
 
+## v0.4.0 (unreleased)
+
+New diff command, DM format inference, structured error hints, interface-driven design.
+
+### New Features
+
+- **`vdexcli diff`** — Compare two VDEX files and report structural differences
+  - Section sizes, checksums, DEX files, verifier classes/pairs, type-lookup entries
+  - Output formats: text (with color), json, jsonl, summary
+  - Exit code: 0 identical, 1 different
+- **DM format class inference** — `inferClassCount` heuristic reverse-engineers `class_def_count` from the verifier section offset table when no DEX section is present
+  - Before: DM-format VDEX showed `verified=0 unverified=0 pairs=0`
+  - After: correctly reports e.g. `verified=246 pairs=565 extras=7`
+  - Validated against 166 real Android 16 VDEX files
+- **Structured error diagnostics with hints** — every `ParseDiagnostic` now includes:
+  - `[CODE]` prefix in error messages (e.g. `[ERR_FILE_TOO_SMALL]`)
+  - `Hint` field with actionable suggestions (e.g. "verify the file is a complete VDEX")
+  - `ForJSON()` method for structured JSON output with code/severity/category/hint
+- **`flagsbinder` integration** — flag definitions via `flagsbinder.NewViperCobraFlagsBinder()` chaining; opts structs (`GlobalOpts`, `ParseOpts`, `ModifyOpts`) replace 16 global variables
+
+### Interfaces
+
+New interfaces for testability and mock injection (DIP):
+
+**modifier (5 interfaces):**
+- `VerifierBuilder` — BuildReplacement, BuildMerge
+- `VerifierComparator` — Compare
+- `PatchLoader` — Load, Validate
+- `FailureClassifier` — Reason, Category
+- `OutputWriter` — WriteAtomic, AppendLog
+
+**presenter (4 interfaces):**
+- `ReportWriter` — 7 implementations (JSON/JSONL/Text/Table/Summary/Sections/Coverage)
+- `SummaryWriter` — WriteModify, WriteExtract
+- `WarningProcessor` — Group, StrictMatch
+- `DiffWriter` — WriteDiff
+
+Each interface has a `Default*` implementation wrapping the existing package functions, plus compile-time compliance checks.
+
+### Testing
+
+```
+232 tests (+84 from v0.3.0), 0 failures
+
+binutil      18 tests   100.0% coverage
+dex          16 tests    87.1% coverage  (was 0%)
+parser       55 tests    88.9% coverage
+modifier     56 tests    81.0% coverage  (was 38.5%)
+extractor     9 tests    81.3% coverage
+presenter    46 tests    86.4% coverage  (was 0%)
+cmd          32 tests    (e2e subprocess)
+```
+
+### Bug Fixes
+
+- DM-format VDEX verifier parsing now works (was silently returning empty results)
+- `DiagSectionZeroSize` now uses section name instead of raw kind number
+- Merge edge cases: duplicate dex index, out-of-range index, malformed bounds all properly caught
+
+### Dependencies
+
+- Added: `github.com/dh-kam/refutils` v0.9.1 (flagsbinder)
+- Removed: `sourcegraph/conc` (unused indirect)
+- Updated: `spf13/cobra` v1.8.1 → v1.10.2, `spf13/pflag` v1.0.5 → v1.0.10
+
+---
+
 ## v0.3.0 (unreleased)
 
 Complete architectural overhaul from single-file CLI to clean multi-package Go project.

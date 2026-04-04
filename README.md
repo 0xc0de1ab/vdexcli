@@ -18,18 +18,47 @@ Parses every byte of a VDEX v027 file — header, section table, checksums, embe
 ```bash
 go install github.com/0xc0de1ab/vdexcli@latest
 
-# Parse a VDEX file
+# Inspect a VDEX file — full structure with byte coverage
 vdexcli parse app.vdex
 
-# JSON output for scripting
-vdexcli parse --json app.vdex | jq '.byte_coverage.coverage_percent'
+# CI gate: one-line status check
+vdexcli parse --format summary app.vdex
+# → status=ok size=5608 version=027 sections=4 checksums=1 dexes=0 coverage=100.0%
 
 # Extract embedded DEX files
 vdexcli extract-dex app.vdex ./dex-output/
 
-# Patch verifier deps
-vdexcli modify --verifier-json patch.json input.vdex output.vdex
+# Compare two VDEX files after modification
+vdexcli diff before.vdex after.vdex
+# → verifier_deps: (2 classes changed)
+# →   [dex 0] verified 246→244 (-2)  pairs 565→563 (-2)
+
+# Patch verifier deps and verify
+vdexcli modify --dry-run --verifier-json patch.json input.vdex output.vdex
+
+# Batch scan all VDEX files in a directory
+for f in *.vdex; do vdexcli parse --format summary "$f"; done
 ```
+
+### Use Cases
+
+- **AOSP build verification** — scan all VDEX files after `dexpreopt` to confirm 100% byte coverage and no parse errors
+- **Verifier patching** — selectively mark classes as verified/unverified for testing ART behavior
+- **DEX extraction** — pull embedded DEX files from VDEX containers for disassembly with `jadx`/`baksmali`
+- **CI/CD integration** — `--format summary` provides a single parseable line for automated checks
+- **Pre/post comparison** — `vdexcli diff` detects structural changes between VDEX builds
+
+### Performance
+
+Measured on a single core (arm64), single VDEX file:
+
+| File size | Parse time | Throughput |
+|-----------|-----------|------------|
+| 204 B | ~4 ms | instant |
+| 5.6 KB | ~4 ms | instant |
+| 178 KB (28 dex) | ~13 ms | ~14 MB/s |
+
+Batch scan: **166 files in 1.4 seconds** (including DM format class inference).
 
 ## Example Output
 
@@ -170,6 +199,31 @@ warnings: 2
 
 When output is a terminal, fields are color-coded: green for verified, yellow for warnings, red for errors. Use `--color always` to force colors in pipes.
 
+### Comparing two VDEX files
+
+```
+$ vdexcli diff original.vdex modified.vdex
+
+VDEX diff
+  A: original.vdex (204 bytes)
+  B: modified.vdex (204 bytes)
+
+verifier_deps: (2 classes changed)
+  [dex 0] verified 2→0 (-2)  pairs 1→0 (-1)  extras 0→0
+
+summary: sections=0 checksums=0 dexes=0 verifier=2 typelookup=0
+
+$ vdexcli diff --format json original.vdex modified.vdex | jq '.summary'
+{
+  "identical": false,
+  "sections_changed": 0,
+  "checksums_changed": 0,
+  "dex_files_changed": 0,
+  "verifier_classes_changed": 2,
+  "type_lookup_entries_changed": 0
+}
+```
+
 ### Strict mode
 
 ```
@@ -304,6 +358,48 @@ meanings:
     checksums: Concatenated checksum array, one entry per embedded dex
     dex_files: Parsed DEX payload metadata and preview classes
     verifier_deps: Verifier dependency section summary per dex
+```
+
+### diff
+
+```bash
+vdexcli diff before.vdex after.vdex              # text with color
+vdexcli diff --json before.vdex after.vdex        # full JSON diff
+vdexcli diff --format summary before.vdex after.vdex  # one-line for CI
+vdexcli diff --format jsonl before.vdex after.vdex    # single-line JSON for logs
+```
+
+Exit code: 0 if identical, 1 if different.
+
+**Compares:** header, section sizes, checksums, DEX files, verifier classes/pairs, type-lookup entries.
+
+**Example — files differ:**
+
+```
+$ vdexcli diff original.vdex modified.vdex
+
+VDEX diff
+  A: original.vdex (204 bytes)
+  B: modified.vdex (204 bytes)
+
+verifier_deps: (2 classes changed)
+  [dex 0] verified 2→0 (-2)  pairs 1→0 (-1)  extras 0→0
+
+summary: sections=0 checksums=0 dexes=0 verifier=2 typelookup=0
+```
+
+**Example — CI gate with summary:**
+
+```
+$ vdexcli diff --format summary original.vdex modified.vdex
+status=different size_a=204 size_b=204 sections=0 checksums=0 dexes=0 verifier=2 typelookup=0
+$ echo $?
+1
+
+$ vdexcli diff --format summary same.vdex same.vdex
+status=identical size_a=204 size_b=204 sections=0 checksums=0 dexes=0 verifier=0 typelookup=0
+$ echo $?
+0
 ```
 
 ## Global Flags
