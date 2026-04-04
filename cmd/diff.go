@@ -63,11 +63,13 @@ func runDiff(cmd *cobra.Command, args []string) error {
 		if !diff.Summary.Identical {
 			status = "different"
 		}
-		fmt.Fprintf(w, "status=%s file_a=%s file_b=%s size_a=%d size_b=%d sections=%d checksums=%d dexes=%d verifier=%d typelookup=%d\n",
+		warnA := len(reportA.Warnings)
+		warnB := len(reportB.Warnings)
+		fmt.Fprintf(w, "status=%s file_a=%s file_b=%s size_a=%d size_b=%d sections=%d checksums=%d dexes=%d verifier=%d typelookup=%d warnings_a=%d warnings_b=%d\n",
 			status, diff.FileA, diff.FileB, diff.SizeA, diff.SizeB,
 			diff.Summary.SectionsChanged, diff.Summary.ChecksumsChanged,
 			diff.Summary.DexFilesChanged, diff.Summary.VerifierChanged,
-			diff.Summary.TypeLookupChanged)
+			diff.Summary.TypeLookupChanged, warnA, warnB)
 	default:
 		presenter.WriteDiffText(w, diff)
 	}

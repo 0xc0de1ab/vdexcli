@@ -387,6 +387,8 @@ func TestE2E_Diff_Summary_Different(t *testing.T) {
 	assert.Equal(t, 1, code)
 	assert.Contains(t, out, "status=different")
 	assert.Contains(t, out, "verifier=")
+	assert.Contains(t, out, "warnings_a=")
+	assert.Contains(t, out, "warnings_b=")
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	assert.Len(t, lines, 1)
 }
