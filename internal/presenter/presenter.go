@@ -55,6 +55,38 @@ func PrintGroupedWarnings(warnings []string) {
 	}
 }
 
+// PrintGroupedDiagnostics prints warnings grouped by category with hints.
+func PrintGroupedDiagnostics(diags []model.ParseDiagnostic) {
+	if len(diags) == 0 {
+		return
+	}
+	grouped := lo.GroupBy(diags, func(d model.ParseDiagnostic) string {
+		return string(d.Category)
+	})
+	order := []string{"header", "section", "checksum", "dex", "verifier", "type_lookup"}
+	for _, c := range order {
+		ds, ok := grouped[c]
+		if !ok || len(ds) == 0 {
+			continue
+		}
+		warns := lo.Filter(ds, func(d model.ParseDiagnostic, _ int) bool { return d.Severity == model.SeverityWarning })
+		if len(warns) == 0 {
+			continue
+		}
+		fmt.Printf("%s warnings (%d):\n", c, len(warns))
+		for _, d := range warns {
+			fmt.Printf("  - %s\n", d.Message)
+			if d.Hint != "" {
+				fmt.Printf("    %s %s\n", c_hint("hint:"), d.Hint)
+			}
+		}
+	}
+}
+
+func c_hint(label string) string {
+	return c(dimWht, label)
+}
+
 func StrictMatchingWarnings(warnings []string, filter string) ([]string, []string) {
 	if len(warnings) == 0 {
 		return nil, nil
@@ -184,13 +216,21 @@ func PrintText(r *model.VdexReport) {
 		}
 	}
 
-	if len(r.Warnings) > 0 {
+	if len(r.Diagnostics) > 0 {
+		PrintGroupedDiagnostics(r.Diagnostics)
+	} else if len(r.Warnings) > 0 {
 		PrintGroupedWarnings(r.Warnings)
 	}
 	if len(r.Errors) > 0 {
 		fmt.Println("errors:")
 		for _, e := range r.Errors {
 			fmt.Printf("  ! %s\n", e)
+		}
+		// Show hints for error diagnostics
+		for _, d := range r.Diagnostics {
+			if d.Severity == model.SeverityError && d.Hint != "" {
+				fmt.Printf("    %s %s\n", c_hint("hint:"), d.Hint)
+			}
 		}
 	}
 }

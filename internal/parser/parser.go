@@ -35,41 +35,37 @@ func ParseVdex(path string, includeMeanings bool) (*model.VdexReport, []byte, er
 
 	if len(raw) < 12 {
 		d := model.DiagFileTooSmall(len(raw))
-		r.Errors = append(r.Errors, d.Message)
+		r.AddDiag(d)
 		return r, raw, d
 	}
 
 	r.Header = parseHeader(raw)
 	if r.Header.Magic != "vdex" {
-		d := model.DiagInvalidMagic(r.Header.Magic)
-		r.Errors = append(r.Errors, d.Message)
+		r.AddDiag(model.DiagInvalidMagic(r.Header.Magic))
 	}
 	if r.Header.Version != model.VdexCurrentVersion {
-		d := model.DiagVersionMismatch(model.VdexCurrentVersion, r.Header.Version)
-		r.Warnings = append(r.Warnings, d.Message)
+		r.AddDiag(model.DiagVersionMismatch(model.VdexCurrentVersion, r.Header.Version))
 	}
 
 	headerEnd := int(12 + r.Header.NumSections*12)
 	if len(raw) < headerEnd {
 		d := model.DiagSectionTableTruncated(headerEnd, len(raw))
-		r.Errors = append(r.Errors, d.Message)
+		r.AddDiag(d)
 		return r, raw, d
 	}
 
-	sections, secIndex, err := ParseSections(raw[12:headerEnd], r.Header.NumSections)
-	if err != nil {
-		r.Warnings = append(r.Warnings, err.Error())
-	}
+	sections, secIndex, secDiags := ParseSections(raw[12:headerEnd], r.Header.NumSections)
+	r.AddDiags(secDiags)
 	r.Sections = sections
-	r.Warnings = append(r.Warnings, ValidateSections(len(raw), sections)...)
+	r.AddDiags(ValidateSections(len(raw), sections))
 
 	r.Checksums = parseChecksums(raw, sections, secIndex, r)
 
 	var dexContexts []*model.DexContext
 	if idx, ok := secIndex[model.SectionDex]; ok {
-		var dexWarnings []string
-		dexContexts, dexWarnings = dex.ParseSection(raw, sections[idx], len(r.Checksums))
-		r.Warnings = append(r.Warnings, dexWarnings...)
+		var dexDiags []model.ParseDiagnostic
+		dexContexts, dexDiags = dex.ParseSection(raw, sections[idx], len(r.Checksums))
+		r.AddDiags(dexDiags)
 	}
 	for _, d := range dexContexts {
 		rep := d.Rep
@@ -80,8 +76,7 @@ func ParseVdex(path string, includeMeanings bool) (*model.VdexReport, []byte, er
 	}
 
 	if len(r.Checksums) == 0 {
-		d := model.DiagNoChecksumSection()
-		r.Warnings = append(r.Warnings, d.Message)
+		r.AddDiag(model.DiagNoChecksumSection())
 	}
 
 	expected := len(r.Checksums)
@@ -89,14 +84,14 @@ func ParseVdex(path string, includeMeanings bool) (*model.VdexReport, []byte, er
 		expected = len(dexContexts)
 	}
 	if idx, ok := secIndex[model.SectionVerifierDeps]; ok {
-		rep, ws := ParseVerifierSection(raw, sections[idx], dexContexts, expected)
+		rep, ds := ParseVerifierSection(raw, sections[idx], dexContexts, expected)
 		r.Verifier = rep
-		r.Warnings = append(r.Warnings, ws...)
+		r.AddDiags(ds)
 	}
 	if idx, ok := secIndex[model.SectionTypeLookup]; ok {
-		rep, ws := ParseTypeLookupSection(raw, sections[idx], dexContexts, expected)
+		rep, ds := ParseTypeLookupSection(raw, sections[idx], dexContexts, expected)
 		r.TypeLookup = rep
-		r.Warnings = append(r.Warnings, ws...)
+		r.AddDiags(ds)
 	}
 
 	r.Coverage = ComputeByteCoverage(len(raw), r.Header, r.Sections, r.Dexes)
@@ -131,13 +126,11 @@ func parseChecksums(raw []byte, sections []model.VdexSection, secIndex map[uint3
 	}
 	s := sections[idx]
 	if s.Offset+s.Size > uint32(len(raw)) {
-		d := model.DiagChecksumExceedsFile()
-		r.Errors = append(r.Errors, d.Message)
+		r.AddDiag(model.DiagChecksumExceedsFile())
 		return nil
 	}
 	if s.Size%4 != 0 {
-		d := model.DiagChecksumAlignment()
-		r.Warnings = append(r.Warnings, d.Message)
+		r.AddDiag(model.DiagChecksumAlignment())
 	}
 	count := int(s.Size) / 4
 	out := make([]uint32, count)

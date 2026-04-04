@@ -20,6 +20,7 @@ const (
 	boldGrn = "\033[1;32m"
 	boldYlw = "\033[1;33m"
 	boldCyn = "\033[1;36m"
+	dimWht  = "\033[2;37m"
 )
 
 var colorEnabled bool

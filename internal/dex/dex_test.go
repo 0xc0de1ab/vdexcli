@@ -94,18 +94,19 @@ func TestParseSection_SingleDex(t *testing.T) {
 func TestParseSection_OutOfRange(t *testing.T) {
 	raw := make([]byte, 50)
 	s := model.VdexSection{Offset: 100, Size: 50}
-	ctxs, warnings := ParseSection(raw, s, 1)
+	ctxs, diags := ParseSection(raw, s, 1)
 	assert.Empty(t, ctxs)
-	require.NotEmpty(t, warnings)
-	assert.Contains(t, warnings[0], "out of file range")
+	require.NotEmpty(t, diags)
+	assert.Contains(t, diags[0].Message, "out of file range")
+	assert.NotEmpty(t, diags[0].Hint)
 }
 
 func TestParseSection_Truncated(t *testing.T) {
 	raw := make([]byte, 80)
 	s := model.VdexSection{Offset: 0, Size: 80} // only 80 bytes, need 0x70=112
-	ctxs, warnings := ParseSection(raw, s, 1)
+	ctxs, diags := ParseSection(raw, s, 1)
 	assert.Empty(t, ctxs)
-	assert.NotEmpty(t, warnings)
+	assert.NotEmpty(t, diags)
 }
 
 // --- ParseStrings ---

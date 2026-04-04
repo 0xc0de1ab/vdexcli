@@ -10,17 +10,17 @@ import (
 // ParseVerifierSection parses the kVerifierDepsSection. The section
 // starts with a uint32[D] offset table (section-absolute), followed
 // by per-dex verifier dependency blocks.
-func ParseVerifierSection(raw []byte, s model.VdexSection, dexes []*model.DexContext, expected int) (*model.VerifierReport, []string) {
+func ParseVerifierSection(raw []byte, s model.VdexSection, dexes []*model.DexContext, expected int) (*model.VerifierReport, []model.ParseDiagnostic) {
 	out := &model.VerifierReport{
 		Offset: s.Offset,
 		Size:   s.Size,
 	}
-	var warnings []string
+	var diags []model.ParseDiagnostic
 	start := int(s.Offset)
 	end := start + int(s.Size)
 	if start < 0 || end > len(raw) {
-		warnings = append(warnings, "verifier-deps section out of file range")
-		return out, warnings
+		diags = append(diags, model.DiagVerifierSectionRange())
+		return out, diags
 	}
 	if expected == 0 {
 		expected = len(dexes)
@@ -29,25 +29,25 @@ func ParseVerifierSection(raw []byte, s model.VdexSection, dexes []*model.DexCon
 	for i := 0; i < expected; i++ {
 		indexOff := start + i*4
 		if indexOff+4 > end {
-			warnings = append(warnings, fmt.Sprintf("verifier section index table truncated at dex %d", i))
+			diags = append(diags, model.DiagVerifierIndexTruncated(i))
 			break
 		}
 		relative := int(binutil.ReadU32(raw, indexOff))
 		blockOff := start + relative
 		if blockOff < start || blockOff >= end {
-			warnings = append(warnings, fmt.Sprintf("verifier block %d offset %#x outside section", i, relative))
+			diags = append(diags, model.DiagVerifierBlockOutside(i, relative))
 			continue
 		}
-		rep, ws := parseVerifierDex(raw, start, blockOff, end, i, dexes)
+		rep, ds := parseVerifierDex(raw, start, blockOff, end, i, dexes)
 		out.Dexes = append(out.Dexes, rep)
-		warnings = append(warnings, ws...)
+		diags = append(diags, ds...)
 	}
-	return out, warnings
+	return out, diags
 }
 
-func parseVerifierDex(raw []byte, sectionStart int, blockStart int, sectionEnd int, dexIdx int, dexes []*model.DexContext) (model.VerifierDexReport, []string) {
+func parseVerifierDex(raw []byte, sectionStart int, blockStart int, sectionEnd int, dexIdx int, dexes []*model.DexContext) (model.VerifierDexReport, []model.ParseDiagnostic) {
 	out := model.VerifierDexReport{DexIndex: dexIdx}
-	var warnings []string
+	var diags []model.ParseDiagnostic
 
 	numClass := 0
 	var baseStrings []string
@@ -62,13 +62,19 @@ func parseVerifierDex(raw []byte, sectionStart int, blockStart int, sectionEnd i
 		inferred := inferClassCount(raw, sectionStart, blockStart, sectionEnd)
 		if inferred > 0 {
 			numClass = inferred
-			warnings = append(warnings, fmt.Sprintf("dex %d: inferred class_def_count=%d from verifier section (DM format)", dexIdx, numClass))
+			diags = append(diags, model.ParseDiagnostic{
+				Severity: model.SeverityWarning,
+				Category: model.CatVerifier,
+				Code:     model.WarnVerifierInferredCount,
+				Message:  fmt.Sprintf("dex %d: inferred class_def_count=%d from verifier section (DM format)", dexIdx, numClass),
+				Hint:     "no embedded DEX; class count inferred from offset table heuristic — verify against source APK",
+			})
 		}
 	}
 
 	if blockStart+4*(numClass+1) > sectionEnd {
-		warnings = append(warnings, fmt.Sprintf("dex %d verifier block truncated", dexIdx))
-		return out, warnings
+		diags = append(diags, model.DiagVerifierBlockTruncated(dexIdx))
+		return out, diags
 	}
 
 	offsets := make([]uint32, numClass+1)
@@ -97,14 +103,14 @@ func parseVerifierDex(raw []byte, sectionStart int, blockStart int, sectionEnd i
 		for nextValid <= classIdx || (nextValid <= numClass && offsets[nextValid] == model.NotVerifiedMarker) {
 			nextValid++
 			if nextValid > numClass {
-				warnings = append(warnings, fmt.Sprintf("dex %d class %d malformed class offset chain", dexIdx, classIdx))
-				return out, warnings
+				diags = append(diags, model.DiagVerifierMalformedChain(dexIdx, classIdx))
+				return out, diags
 			}
 		}
 		setStart := sectionStart + int(o)
 		setEnd := sectionStart + int(offsets[nextValid])
 		if setStart < blockStart || setEnd > sectionEnd || setEnd < setStart {
-			warnings = append(warnings, fmt.Sprintf("dex %d class %d malformed set bounds", dexIdx, classIdx))
+			diags = append(diags, model.DiagVerifierMalformedBounds(dexIdx, classIdx))
 			continue
 		}
 		cursor := setStart
@@ -114,13 +120,13 @@ func parseVerifierDex(raw []byte, sectionStart int, blockStart int, sectionEnd i
 		for cursor < setEnd {
 			dest, n, err := binutil.ReadULEB128(raw, cursor)
 			if err != nil {
-				warnings = append(warnings, fmt.Sprintf("dex %d class %d invalid destination leb128", dexIdx, classIdx))
+				diags = append(diags, model.DiagVerifierInvalidLEB128(dexIdx, classIdx, "destination"))
 				break
 			}
 			cursor += n
 			src, n, err := binutil.ReadULEB128(raw, cursor)
 			if err != nil {
-				warnings = append(warnings, fmt.Sprintf("dex %d class %d invalid source leb128", dexIdx, classIdx))
+				diags = append(diags, model.DiagVerifierInvalidLEB128(dexIdx, classIdx, "source"))
 				break
 			}
 			cursor += n
@@ -135,14 +141,14 @@ func parseVerifierDex(raw []byte, sectionStart int, blockStart int, sectionEnd i
 	cursor := binutil.Align4(maxSetEnd)
 	if cursor+4 > sectionEnd {
 		out.ExtraStringCount = 0
-		return out, warnings
+		return out, diags
 	}
 	numStrings := int(binutil.ReadU32(raw, cursor))
 	cursor += 4
 	if cursor+numStrings*4 > sectionEnd {
-		warnings = append(warnings, fmt.Sprintf("dex %d verifier extra strings table truncated", dexIdx))
+		diags = append(diags, model.DiagVerifierExtrasTruncated(dexIdx))
 		out.ExtraStringCount = 0
-		return out, warnings
+		return out, diags
 	}
 
 	extras := make([]string, numStrings)
@@ -152,7 +158,7 @@ func parseVerifierDex(raw []byte, sectionStart int, blockStart int, sectionEnd i
 		abs := sectionStart + rel
 		if abs < blockStart || abs >= sectionEnd {
 			extras[i] = fmt.Sprintf("invalid_%d", i)
-			warnings = append(warnings, fmt.Sprintf("dex %d extra string %d offset %#x invalid", dexIdx, i, rel))
+			diags = append(diags, model.DiagVerifierExtraInvalid(dexIdx, i, rel))
 			continue
 		}
 		extras[i] = binutil.ReadCString(raw[abs:sectionEnd])
@@ -171,7 +177,7 @@ func parseVerifierDex(raw []byte, sectionStart int, blockStart int, sectionEnd i
 		})
 	}
 
-	return out, warnings
+	return out, diags
 }
 
 // inferClassCount determines class_def_count from the verifier block's

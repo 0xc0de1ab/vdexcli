@@ -66,8 +66,8 @@ func TestParseSections_StandardFour(t *testing.T) {
 	buf = appendSectionHeader(buf, 2, 180, 256) // verifier
 	buf = appendSectionHeader(buf, 3, 436, 64)  // typelookup
 
-	sections, index, err := ParseSections(buf, 4)
-	require.NoError(t, err)
+	sections, index, diags := ParseSections(buf, 4)
+	assert.Empty(t, diags)
 	require.Len(t, sections, 4)
 
 	assert.Equal(t, "kChecksumSection", sections[0].Name)
@@ -88,8 +88,8 @@ func TestParseSections_UnknownKind(t *testing.T) {
 	var buf []byte
 	buf = appendSectionHeader(buf, 99, 60, 4)
 
-	sections, _, err := ParseSections(buf, 1)
-	require.NoError(t, err)
+	sections, _, diags := ParseSections(buf, 1)
+	assert.Empty(t, diags)
 	require.Len(t, sections, 1)
 
 	assert.Equal(t, "unknown(99)", sections[0].Name)
@@ -101,9 +101,9 @@ func TestParseSections_DuplicateKind(t *testing.T) {
 	buf = appendSectionHeader(buf, 0, 60, 4)
 	buf = appendSectionHeader(buf, 0, 68, 4) // duplicate kind 0
 
-	sections, index, err := ParseSections(buf, 2)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "duplicate section kind 0")
+	sections, index, diags := ParseSections(buf, 2)
+	require.Len(t, diags, 1)
+	assert.Contains(t, diags[0].Message, "duplicate section kind 0")
 	assert.Len(t, sections, 2)
 	assert.Equal(t, 0, index[0], "first occurrence should be used")
 }
@@ -117,26 +117,28 @@ func TestValidateSections_ValidNoWarnings(t *testing.T) {
 		{Kind: 2, Offset: 180, Size: 100},
 		{Kind: 3, Offset: 280, Size: 64},
 	}
-	warnings := ValidateSections(344, sections)
-	assert.Empty(t, warnings)
+	diags := ValidateSections(344, sections)
+	assert.Empty(t, diags)
 }
 
 func TestValidateSections_ExceedsFileSize(t *testing.T) {
 	sections := []model.VdexSection{
 		{Kind: 0, Offset: 60, Size: 999},
 	}
-	warnings := ValidateSections(100, sections)
-	require.Len(t, warnings, 1)
-	assert.Contains(t, warnings[0], "exceeds file")
+	diags := ValidateSections(100, sections)
+	require.Len(t, diags, 1)
+	assert.Contains(t, diags[0].Message, "exceeds file")
+	assert.NotEmpty(t, diags[0].Hint)
 }
 
 func TestValidateSections_ZeroSize(t *testing.T) {
 	sections := []model.VdexSection{
 		{Kind: 1, Offset: 0, Size: 0},
 	}
-	warnings := ValidateSections(100, sections)
-	require.Len(t, warnings, 1)
-	assert.Contains(t, warnings[0], "zero size")
+	diags := ValidateSections(100, sections)
+	require.Len(t, diags, 1)
+	assert.Contains(t, diags[0].Message, "zero size")
+	assert.NotEmpty(t, diags[0].Hint)
 }
 
 func TestValidateSections_Overlap(t *testing.T) {
@@ -144,18 +146,20 @@ func TestValidateSections_Overlap(t *testing.T) {
 		{Kind: 0, Offset: 60, Size: 20},
 		{Kind: 1, Offset: 70, Size: 20}, // overlaps with kind 0 (60..80 ∩ 70..90)
 	}
-	warnings := ValidateSections(200, sections)
-	require.Len(t, warnings, 1)
-	assert.Contains(t, warnings[0], "overlaps")
+	diags := ValidateSections(200, sections)
+	require.Len(t, diags, 1)
+	assert.Contains(t, diags[0].Message, "overlaps")
+	assert.NotEmpty(t, diags[0].Hint)
 }
 
 func TestValidateSections_BeyondFileStart(t *testing.T) {
 	sections := []model.VdexSection{
 		{Kind: 0, Offset: 9999, Size: 4},
 	}
-	warnings := ValidateSections(100, sections)
-	require.Len(t, warnings, 1)
-	assert.Contains(t, warnings[0], "beyond file")
+	diags := ValidateSections(100, sections)
+	require.Len(t, diags, 1)
+	assert.Contains(t, diags[0].Message, "beyond file")
+	assert.NotEmpty(t, diags[0].Hint)
 }
 
 // --- ParseVdex integration tests ---

@@ -10,17 +10,17 @@ import (
 // ParseTypeLookupSection parses the kTypeLookupTableSection.
 // Each per-dex block starts with a uint32 raw-size followed by
 // that many bytes of 8-byte hash table entries.
-func ParseTypeLookupSection(raw []byte, s model.VdexSection, dexes []*model.DexContext, expected int) (*model.TypeLookupReport, []string) {
+func ParseTypeLookupSection(raw []byte, s model.VdexSection, dexes []*model.DexContext, expected int) (*model.TypeLookupReport, []model.ParseDiagnostic) {
 	out := &model.TypeLookupReport{
 		Offset: s.Offset,
 		Size:   s.Size,
 	}
-	var warnings []string
+	var diags []model.ParseDiagnostic
 	start := int(s.Offset)
 	end := start + int(s.Size)
 	if start < 0 || end > len(raw) {
-		warnings = append(warnings, "type-lookup section out of file range")
-		return out, warnings
+		diags = append(diags, model.DiagTypeLookupSectionRange())
+		return out, diags
 	}
 	if expected == 0 {
 		expected = len(dexes)
@@ -29,13 +29,13 @@ func ParseTypeLookupSection(raw []byte, s model.VdexSection, dexes []*model.DexC
 	cursor := start
 	for i := 0; i < expected; i++ {
 		if cursor+4 > end {
-			warnings = append(warnings, fmt.Sprintf("type-lookup section truncated before dex %d", i))
+			diags = append(diags, model.DiagTypeLookupTruncated(i))
 			break
 		}
 		size := int(binutil.ReadU32(raw, cursor))
 		cursor += 4
 		if cursor+size > end {
-			warnings = append(warnings, fmt.Sprintf("type-lookup dex %d size %d exceeds section", i, size))
+			diags = append(diags, model.DiagTypeLookupDexExceeds(i, size))
 			break
 		}
 		var d *model.DexContext
@@ -47,7 +47,7 @@ func ParseTypeLookupSection(raw []byte, s model.VdexSection, dexes []*model.DexC
 		out.Dexes = append(out.Dexes, rep)
 		cursor += size
 	}
-	return out, warnings
+	return out, diags
 }
 
 func parseTypeLookupDex(raw []byte, dex *model.DexContext) model.TypeLookupDexReport {

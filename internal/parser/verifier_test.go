@@ -122,28 +122,30 @@ func buildVerifierDexPayload(b verifierDexBlock) []byte {
 func TestParseVerifierSection_OutOfRange(t *testing.T) {
 	raw := make([]byte, 100)
 	s := model.VdexSection{Offset: 200, Size: 50} // beyond raw
-	report, warnings := ParseVerifierSection(raw, s, nil, 1)
+	report, diags := ParseVerifierSection(raw, s, nil, 1)
 	assert.NotNil(t, report)
-	require.Len(t, warnings, 1)
-	assert.Contains(t, warnings[0], "out of file range")
+	require.Len(t, diags, 1)
+	assert.Contains(t, diags[0].Message, "out of file range")
+	assert.NotEmpty(t, diags[0].Hint)
 }
 
 func TestParseVerifierSection_EmptySection(t *testing.T) {
 	raw := make([]byte, 100)
 	s := model.VdexSection{Offset: 0, Size: 0}
-	report, warnings := ParseVerifierSection(raw, s, nil, 0)
+	report, diags := ParseVerifierSection(raw, s, nil, 0)
 	assert.NotNil(t, report)
 	assert.Empty(t, report.Dexes)
-	assert.Empty(t, warnings)
+	assert.Empty(t, diags)
 }
 
 func TestParseVerifierSection_IndexTableTruncated(t *testing.T) {
 	raw := make([]byte, 10)
 	s := model.VdexSection{Offset: 0, Size: 6} // need 8 bytes for 2 dex offsets, only 6
-	report, warnings := ParseVerifierSection(raw, s, nil, 2)
+	report, diags := ParseVerifierSection(raw, s, nil, 2)
 	assert.NotNil(t, report)
-	require.NotEmpty(t, warnings)
-	assert.Contains(t, warnings[0], "truncated")
+	require.NotEmpty(t, diags)
+	assert.Contains(t, diags[0].Message, "truncated")
+	assert.NotEmpty(t, diags[0].Hint)
 }
 
 func TestParseVerifierSection_BlockOutsideSection(t *testing.T) {
@@ -151,11 +153,12 @@ func TestParseVerifierSection_BlockOutsideSection(t *testing.T) {
 	// per-dex offset table: dex 0 at offset 9999 (outside section)
 	binary.LittleEndian.PutUint32(raw[0:], 9999)
 	s := model.VdexSection{Offset: 0, Size: 20}
-	report, warnings := ParseVerifierSection(raw, s, nil, 1)
+	report, diags := ParseVerifierSection(raw, s, nil, 1)
 	assert.NotNil(t, report)
 	assert.Empty(t, report.Dexes)
-	require.NotEmpty(t, warnings)
-	assert.Contains(t, warnings[0], "outside section")
+	require.NotEmpty(t, diags)
+	assert.Contains(t, diags[0].Message, "outside section")
+	assert.NotEmpty(t, diags[0].Hint)
 }
 
 func TestParseVerifierSection_SingleDex_AllUnverified(t *testing.T) {

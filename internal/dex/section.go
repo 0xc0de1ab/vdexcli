@@ -9,20 +9,20 @@ import (
 
 // ParseSection iterates over a kDexFileSection byte range, parsing each
 // concatenated DEX file. DEX files are 4-byte aligned within the section.
-func ParseSection(raw []byte, s model.VdexSection, expected int) ([]*model.DexContext, []string) {
+func ParseSection(raw []byte, s model.VdexSection, expected int) ([]*model.DexContext, []model.ParseDiagnostic) {
 	var out []*model.DexContext
-	var warnings []string
+	var diags []model.ParseDiagnostic
 	start := int(s.Offset)
 	end := start + int(s.Size)
 	if start < 0 || end > len(raw) || start >= end {
-		warnings = append(warnings, "dex section out of file range")
-		return out, warnings
+		diags = append(diags, model.DiagDexSectionRange())
+		return out, diags
 	}
 
 	cursor := start
 	for (expected == 0 && cursor < end) || (expected > 0 && len(out) < expected) {
 		if cursor+0x70 > end {
-			warnings = append(warnings, "truncated dex header in dex section")
+			diags = append(diags, model.DiagDexTruncated(len(out)))
 			break
 		}
 		nextIdx := len(out)
@@ -32,12 +32,18 @@ func ParseSection(raw []byte, s model.VdexSection, expected int) ([]*model.DexCo
 			if int(ctx.Rep.Offset)+int(ctx.Rep.Size) > end {
 				ctx.Rep.Size = uint32(end - int(ctx.Rep.Offset))
 				used = end - int(ctx.Rep.Offset)
-				warnings = append(warnings, fmt.Sprintf("dex[%d]: file_size exceeds dex section, truncated to %#x", nextIdx, ctx.Rep.Size))
+				diags = append(diags, model.DiagDexFileSizeClamped(nextIdx, ctx.Rep.FileSize, ctx.Rep.Size))
 			}
 			out = append(out, ctx)
 		}
 		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("dex[%d]: %v", nextIdx, err))
+			diags = append(diags, model.ParseDiagnostic{
+				Severity: model.SeverityWarning,
+				Category: model.CatDex,
+				Code:     model.WarnDexTruncated,
+				Message:  fmt.Sprintf("dex[%d]: %v", nextIdx, err),
+				Hint:     "DEX parsing error; this dex may be partially parsed",
+			})
 		}
 		if used <= 0 {
 			break
@@ -48,5 +54,5 @@ func ParseSection(raw []byte, s model.VdexSection, expected int) ([]*model.DexCo
 			break
 		}
 	}
-	return out, warnings
+	return out, diags
 }

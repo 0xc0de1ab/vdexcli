@@ -20,30 +20,32 @@ func buildTypeLookupEntry(strOffset, data uint32) []byte {
 func TestParseTypeLookupSection_OutOfRange(t *testing.T) {
 	raw := make([]byte, 50)
 	s := model.VdexSection{Offset: 200, Size: 20}
-	report, warnings := ParseTypeLookupSection(raw, s, nil, 1)
+	report, diags := ParseTypeLookupSection(raw, s, nil, 1)
 	assert.NotNil(t, report)
-	require.Len(t, warnings, 1)
-	assert.Contains(t, warnings[0], "out of file range")
+	require.Len(t, diags, 1)
+	assert.Contains(t, diags[0].Message, "out of file range")
+	assert.NotEmpty(t, diags[0].Hint)
 }
 
 func TestParseTypeLookupSection_Truncated(t *testing.T) {
 	raw := make([]byte, 6) // need 4 bytes for size, but section says 2 dexes
 	s := model.VdexSection{Offset: 0, Size: 6}
-	report, warnings := ParseTypeLookupSection(raw, s, nil, 2)
+	report, diags := ParseTypeLookupSection(raw, s, nil, 2)
 	assert.NotNil(t, report)
 	require.Len(t, report.Dexes, 1) // first dex parsed, second truncated
-	assert.NotEmpty(t, warnings)
+	assert.NotEmpty(t, diags)
 }
 
 func TestParseTypeLookupSection_DexExceedsSection(t *testing.T) {
 	raw := make([]byte, 8)
 	binary.LittleEndian.PutUint32(raw[0:], 9999) // size=9999 but only 4 bytes left
 	s := model.VdexSection{Offset: 0, Size: 8}
-	report, warnings := ParseTypeLookupSection(raw, s, nil, 1)
+	report, diags := ParseTypeLookupSection(raw, s, nil, 1)
 	assert.NotNil(t, report)
 	assert.Empty(t, report.Dexes)
-	require.NotEmpty(t, warnings)
-	assert.Contains(t, warnings[0], "exceeds section")
+	require.NotEmpty(t, diags)
+	assert.Contains(t, diags[0].Message, "exceeds section")
+	assert.NotEmpty(t, diags[0].Hint)
 }
 
 func TestParseTypeLookupSection_SingleDex(t *testing.T) {

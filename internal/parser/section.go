@@ -9,10 +9,10 @@ import (
 // ParseSections reads the section header table from raw bytes starting at
 // offset 12 (right after the VdexFileHeader). Each entry is 12 bytes:
 // kind(u32) + offset(u32) + size(u32).
-func ParseSections(buf []byte, count uint32) ([]model.VdexSection, map[uint32]int, error) {
+func ParseSections(buf []byte, count uint32) ([]model.VdexSection, map[uint32]int, []model.ParseDiagnostic) {
 	sections := make([]model.VdexSection, 0, count)
 	index := map[uint32]int{}
-	var diagErr error
+	var diags []model.ParseDiagnostic
 	for i := uint32(0); i < count; i++ {
 		base := int(i) * 12
 		kind := binary.LittleEndian.Uint32(buf[base : base+4])
@@ -29,38 +29,34 @@ func ParseSections(buf []byte, count uint32) ([]model.VdexSection, map[uint32]in
 			item.Name = model.UnknownSectionName(kind)
 			item.Meaning = "unknown section kind"
 		}
-		if _, exists := index[kind]; exists && diagErr == nil {
-			d := model.DiagSectionDuplicate(kind)
-			diagErr = d
+		if _, exists := index[kind]; exists && len(diags) == 0 {
+			diags = append(diags, model.DiagSectionDuplicate(kind))
 		}
 		if _, exists := index[kind]; !exists {
 			index[kind] = int(i)
 		}
 		sections = append(sections, item)
 	}
-	return sections, index, diagErr
+	return sections, index, diags
 }
 
 // ValidateSections checks every section's offset/size against the file size
 // and detects overlaps between sections.
-func ValidateSections(fileSize int, sections []model.VdexSection) []string {
-	var warnings []string
+func ValidateSections(fileSize int, sections []model.VdexSection) []model.ParseDiagnostic {
+	var diags []model.ParseDiagnostic
 	for i, s := range sections {
 		start := int(s.Offset)
 		end := int(uint64(s.Offset) + uint64(s.Size))
 		if start < 0 || start > fileSize {
-			d := model.DiagSectionBeyondFile(s.Kind, s.Offset)
-			warnings = append(warnings, d.Message)
+			diags = append(diags, model.DiagSectionBeyondFile(s.Kind, s.Offset))
 			continue
 		}
 		if end > fileSize {
-			d := model.DiagSectionExceedsFile(s.Kind, s.Offset, s.Size)
-			warnings = append(warnings, d.Message)
+			diags = append(diags, model.DiagSectionExceedsFile(s.Kind, s.Offset, s.Size))
 			continue
 		}
 		if s.Size == 0 {
-			d := model.DiagSectionZeroSize(s.Kind)
-			warnings = append(warnings, d.Message)
+			diags = append(diags, model.DiagSectionZeroSize(s.Kind))
 		}
 		for j := 0; j < i; j++ {
 			other := sections[j]
@@ -70,10 +66,9 @@ func ValidateSections(fileSize int, sections []model.VdexSection) []string {
 				continue
 			}
 			if start < otherEnd && otherStart < end {
-				d := model.DiagSectionOverlap(s.Kind, other.Kind)
-				warnings = append(warnings, d.Message)
+				diags = append(diags, model.DiagSectionOverlap(s.Kind, other.Kind))
 			}
 		}
 	}
-	return warnings
+	return diags
 }
