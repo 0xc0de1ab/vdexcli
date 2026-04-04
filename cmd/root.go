@@ -72,6 +72,7 @@ func Execute() {
 	rootCmd.SetVersionTemplate("vdexcli version {{.Version}}\n")
 	rootCmd.SilenceUsage = true
 	rootCmd.SilenceErrors = true
+	rootCmd.CompletionOptions.DisableDefaultCmd = true
 	rootCmd.PersistentPreRun = func(cmd *cobra.Command, _ []string) {
 		g := getGlobalOpts(cmd)
 		switch g.Color {
