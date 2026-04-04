@@ -14,6 +14,7 @@ import (
 
 var testBinary string
 var testVdexPath string
+var testModifiedVdexPath string
 var testPatchPath string
 
 func TestMain(m *testing.M) {
@@ -44,6 +45,13 @@ func TestMain(m *testing.M) {
 	patch := `{"mode":"replace","dexes":[{"dex_index":0,"classes":[{"class_index":0,"verified":false},{"class_index":1,"verified":false},{"class_index":2,"verified":false}]}]}`
 	if err := os.WriteFile(testPatchPath, []byte(patch), 0644); err != nil {
 		panic(err)
+	}
+
+	// Generate modified VDEX for diff tests.
+	testModifiedVdexPath = filepath.Join(tmp, "modified.vdex")
+	modCmd := exec.Command(testBinary, "modify", "--verifier-json", testPatchPath, testVdexPath, testModifiedVdexPath)
+	if out, err := modCmd.CombinedOutput(); err != nil {
+		panic("modify failed: " + string(out))
 	}
 
 	os.Exit(m.Run())
@@ -334,4 +342,95 @@ func TestE2E_Parse_Strict(t *testing.T) {
 func TestE2E_Parse_StrictWarn_NoMatch(t *testing.T) {
 	_, _, code := runCLI(t, "parse", "--strict", "--strict-warn", "nonexistent_pattern_xyz", "--show-meaning=false", testVdexPath)
 	assert.Equal(t, 0, code, "strict with non-matching pattern should pass")
+}
+
+// --- diff ---
+
+func TestE2E_Diff_Identical(t *testing.T) {
+	out, _, code := runCLI(t, "diff", testVdexPath, testVdexPath)
+	assert.Equal(t, 0, code)
+	assert.Contains(t, out, "identical")
+}
+
+func TestE2E_Diff_Different_Text(t *testing.T) {
+	out, _, code := runCLI(t, "diff", testVdexPath, testModifiedVdexPath)
+	assert.Equal(t, 1, code)
+	assert.Contains(t, out, "VDEX diff")
+	assert.Contains(t, out, "verifier_deps:")
+	assert.Contains(t, out, "summary:")
+}
+
+func TestE2E_Diff_JSON(t *testing.T) {
+	out, _, code := runCLI(t, "diff", "--format", "json", testVdexPath, testModifiedVdexPath)
+	assert.Equal(t, 1, code)
+
+	var data map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &data))
+	summary := data["summary"].(map[string]any)
+	assert.Equal(t, false, summary["identical"])
+	assert.NotNil(t, data["verifier_diff"])
+}
+
+func TestE2E_Diff_JSONL(t *testing.T) {
+	out, _, code := runCLI(t, "diff", "--format", "jsonl", testVdexPath, testModifiedVdexPath)
+	assert.Equal(t, 1, code)
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	assert.Len(t, lines, 1)
+
+	var data map[string]any
+	require.NoError(t, json.Unmarshal([]byte(lines[0]), &data))
+	assert.NotNil(t, data["summary"])
+}
+
+func TestE2E_Diff_Summary_Different(t *testing.T) {
+	out, _, code := runCLI(t, "diff", "--format", "summary", testVdexPath, testModifiedVdexPath)
+	assert.Equal(t, 1, code)
+	assert.Contains(t, out, "status=different")
+	assert.Contains(t, out, "verifier=")
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	assert.Len(t, lines, 1)
+}
+
+func TestE2E_Diff_Summary_Identical(t *testing.T) {
+	out, _, code := runCLI(t, "diff", "--format", "summary", testVdexPath, testVdexPath)
+	assert.Equal(t, 0, code)
+	assert.Contains(t, out, "status=identical")
+}
+
+func TestE2E_Diff_JSON_Identical(t *testing.T) {
+	out, _, code := runCLI(t, "diff", "--json", testVdexPath, testVdexPath)
+	assert.Equal(t, 0, code)
+
+	var data map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &data))
+	summary := data["summary"].(map[string]any)
+	assert.Equal(t, true, summary["identical"])
+}
+
+func TestE2E_Diff_InvalidFormat(t *testing.T) {
+	_, stderr, code := runCLI(t, "diff", "--format", "xml", testVdexPath, testVdexPath)
+	assert.NotEqual(t, 0, code)
+	assert.Contains(t, stderr, "unsupported --format")
+}
+
+func TestE2E_Diff_MissingArg(t *testing.T) {
+	_, stderr, code := runCLI(t, "diff", testVdexPath)
+	assert.NotEqual(t, 0, code)
+	assert.Contains(t, stderr, "accepts 2 arg")
+}
+
+func TestE2E_Diff_NonexistentFile(t *testing.T) {
+	_, stderr, code := runCLI(t, "diff", testVdexPath, "/nonexistent_xyz.vdex")
+	assert.NotEqual(t, 0, code)
+	assert.Contains(t, stderr, "no such file")
+}
+
+func TestE2E_Diff_ExitCode_Identical(t *testing.T) {
+	_, _, code := runCLI(t, "diff", testVdexPath, testVdexPath)
+	assert.Equal(t, 0, code, "identical files should exit 0")
+}
+
+func TestE2E_Diff_ExitCode_Different(t *testing.T) {
+	_, _, code := runCLI(t, "diff", testVdexPath, testModifiedVdexPath)
+	assert.Equal(t, 1, code, "different files should exit 1")
 }
