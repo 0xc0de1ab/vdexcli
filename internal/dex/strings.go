@@ -15,7 +15,7 @@ func ParseStrings(raw []byte, stringCount int, stringIdOff int) ([]string, map[u
 		return []string{}, map[uint32]string{}, nil
 	}
 	if stringIdOff < 0 || stringIdOff+stringCount*4 > len(raw) {
-		return nil, nil, fmt.Errorf("invalid string_ids table range")
+		return nil, nil, fmt.Errorf("dex: string_ids table out of range (off=%#x count=%d, dex size=%d)", stringIdOff, stringCount, len(raw))
 	}
 	out := make([]string, stringCount)
 	offsetMap := make(map[uint32]string, stringCount)
@@ -36,19 +36,19 @@ func ParseStrings(raw []byte, stringCount int, stringIdOff int) ([]string, map[u
 
 func parseModifiedUtf8(raw []byte, off int) (string, int, error) {
 	if off < 0 || off >= len(raw) {
-		return "", 0, fmt.Errorf("string offset invalid")
+		return "", 0, fmt.Errorf("dex: string offset %#x out of range (size=%d)", off, len(raw))
 	}
 	_, l, err := binutil.ReadULEB128(raw, off)
 	if err != nil {
-		return "", 0, err
+		return "", 0, fmt.Errorf("dex: string@%#x: %w", off, err)
 	}
 	start := off + l
 	if start >= len(raw) {
-		return "", 0, fmt.Errorf("malformed modified UTF-8")
+		return "", 0, fmt.Errorf("dex: string@%#x: malformed modified UTF-8 (data starts beyond end)", off)
 	}
 	n := bytes.IndexByte(raw[start:], 0)
 	if n < 0 {
-		return "", 0, fmt.Errorf("unterminated string")
+		return "", 0, fmt.Errorf("dex: string@%#x: unterminated (no null byte found)", off)
 	}
 	return string(raw[start : start+n]), l + n + 1, nil
 }

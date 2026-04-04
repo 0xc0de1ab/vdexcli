@@ -102,7 +102,7 @@ func ParseVdex(path string, includeMeanings bool) (*model.VdexReport, []byte, er
 	r.Coverage = ComputeByteCoverage(len(raw), r.Header, r.Sections, r.Dexes)
 
 	if len(r.Errors) > 0 {
-		return r, raw, fmt.Errorf("parse ended with errors")
+		return r, raw, fmt.Errorf("parse: %d error(s): %s", len(r.Errors), r.Errors[0])
 	}
 	return r, raw, nil
 }

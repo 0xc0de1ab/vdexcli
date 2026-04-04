@@ -18,15 +18,15 @@ import (
 // number of bytes consumed, and any error.
 func Parse(raw []byte, fileOffset int) (*model.DexContext, int, error) {
 	if len(raw) < 0x70 {
-		return nil, 0, fmt.Errorf("dex tail shorter than header")
+		return nil, 0, fmt.Errorf("dex@%#x: data shorter than header (%d bytes, need 112)", fileOffset, len(raw))
 	}
 	if !bytes.Equal(raw[0:4], []byte("dex\n")) {
-		return nil, 0, fmt.Errorf("invalid magic %q", string(raw[0:4]))
+		return nil, 0, fmt.Errorf("dex@%#x: invalid magic %q", fileOffset, string(raw[0:4]))
 	}
 
 	fileSize := binutil.ReadU32(raw, 0x20)
 	if fileSize < 0x70 {
-		return nil, 0, fmt.Errorf("invalid file_size %d", fileSize)
+		return nil, 0, fmt.Errorf("dex@%#x: invalid file_size %d", fileOffset, fileSize)
 	}
 	declaredFileSize := fileSize
 	effectiveFileSize := fileSize
@@ -97,10 +97,10 @@ func Parse(raw []byte, fileOffset int) (*model.DexContext, int, error) {
 	}
 
 	if declaredFileSize != effectiveFileSize {
-		return ctx, int(effectiveFileSize), fmt.Errorf("declared file_size %#x exceeds available bytes", declaredFileSize)
+		return ctx, int(effectiveFileSize), fmt.Errorf("dex@%#x: declared file_size %#x exceeds available bytes %#x", fileOffset, declaredFileSize, effectiveFileSize)
 	}
 	if int(ctx.Rep.HeaderSize) > int(effectiveFileSize) {
-		return ctx, int(effectiveFileSize), fmt.Errorf("header_size %#x exceeds file_size", ctx.Rep.HeaderSize)
+		return ctx, int(effectiveFileSize), fmt.Errorf("dex@%#x: header_size %#x exceeds file_size %#x", fileOffset, ctx.Rep.HeaderSize, effectiveFileSize)
 	}
 	return ctx, int(effectiveFileSize), nil
 }

@@ -18,6 +18,13 @@ import (
 	"github.com/0xc0de1ab/vdexcli/internal/model"
 )
 
+// warnErr appends msg to warnings and returns it as an error.
+// Avoids duplicating the same string literal in both places.
+func warnErr(warnings *[]string, msg string) error {
+	*warnings = append(*warnings, msg)
+	return fmt.Errorf("%s", msg)
+}
+
 func MakeFailureReason(summary model.ModifySummary, parseErr error, compareErr error, writeErr error, strictMatched []string) string {
 	if summary.Status == "strict_failed" && len(strictMatched) > 0 {
 		return fmt.Sprintf("strict mode: matched %d warning(s): %v", len(strictMatched), strictMatched)
@@ -338,7 +345,7 @@ func ParseVerifierSectionForMerge(raw []byte, s model.VdexSection, dexes []model
 	start := int(s.Offset)
 	end := start + int(s.Size)
 	if start < 0 || end < start || end > len(raw) {
-		return out, append(warnings, "verifier section out of file range"), fmt.Errorf("verifier section out of file range")
+		return out, warnings, warnErr(&warnings, "modifier: verifier section out of file range")
 	}
 	dexCount := len(dexes)
 	if dexCount == 0 {
@@ -495,7 +502,7 @@ func ParseVerifierDexForMerge(raw []byte, sectionStart int, blockStart int, sect
 	}
 	warnings := []string{}
 	if blockStart+4*(classCount+1) > sectionEnd {
-		return out, append(warnings, fmt.Sprintf("dex %d verifier block truncated", dexIdx)), fmt.Errorf("dex %d verifier block truncated", dexIdx)
+		return out, warnings, warnErr(&warnings, fmt.Sprintf("modifier: dex %d verifier block truncated", dexIdx))
 	}
 
 	offsets := make([]uint32, classCount+1)
@@ -515,14 +522,14 @@ func ParseVerifierDexForMerge(raw []byte, sectionStart int, blockStart int, sect
 		for nextValid <= classIdx || (nextValid <= classCount && offsets[nextValid] == model.NotVerifiedMarker) {
 			nextValid++
 			if nextValid > classCount {
-				return out, append(warnings, fmt.Sprintf("dex %d class %d malformed class offset chain", dexIdx, classIdx)), fmt.Errorf("dex %d class %d malformed class offset chain", dexIdx, classIdx)
+				return out, warnings, warnErr(&warnings, fmt.Sprintf("modifier: dex %d class %d malformed class offset chain", dexIdx, classIdx))
 			}
 		}
 		// Section-absolute offsets: base is sectionStart, not blockStart.
 		setStart := sectionStart + int(o)
 		setEnd := sectionStart + int(offsets[nextValid])
 		if setStart < blockStart || setEnd > sectionEnd || setEnd < setStart {
-			return out, append(warnings, fmt.Sprintf("dex %d class %d malformed set bounds", dexIdx, classIdx)), fmt.Errorf("dex %d class %d malformed set bounds", dexIdx, classIdx)
+			return out, warnings, warnErr(&warnings, fmt.Sprintf("modifier: dex %d class %d malformed set bounds", dexIdx, classIdx))
 		}
 		if setEnd > maxSetEnd {
 			maxSetEnd = setEnd

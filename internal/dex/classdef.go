@@ -15,10 +15,10 @@ func ParseClassDefs(raw []byte, strs []string, typeIds int, typeIdsOff int, clas
 		return nil, nil
 	}
 	if typeIdsOff < 0 || typeIdsOff+typeIds*4 > len(raw) {
-		return nil, fmt.Errorf("invalid type_ids range")
+		return nil, fmt.Errorf("dex: type_ids table out of range (off=%#x count=%d, dex size=%d)", typeIdsOff, typeIds, len(raw))
 	}
 	if classDefsOff < 0 || classDefsOff+classDefsSize*32 > len(raw) {
-		return nil, fmt.Errorf("invalid class_defs range")
+		return nil, fmt.Errorf("dex: class_defs table out of range (off=%#x count=%d, dex size=%d)", classDefsOff, classDefsSize, len(raw))
 	}
 
 	out := make([]string, 0, binutil.MinInt(classDefsSize, model.MaxClassPreview))

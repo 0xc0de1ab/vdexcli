@@ -52,7 +52,7 @@ func runExtractDex(_ *cobra.Command, args []string) error {
 	report.Warnings = append(report.Warnings, res.Warnings...)
 	report.WarningsByCategory = presenter.GroupWarnings(report.Warnings)
 	if err != nil {
-		return err
+		return fmt.Errorf("extract-dex: %w", err)
 	}
 
 	if strictMatched := applyStrict(report); len(strictMatched) > 0 {
