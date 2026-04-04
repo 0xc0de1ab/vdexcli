@@ -172,3 +172,48 @@ func TestParseClassDefs_ResolvesDescriptor(t *testing.T) {
 	require.Len(t, classes, 1)
 	assert.Equal(t, "Lcom/example/Foo;", classes[0])
 }
+
+// --- parseModifiedUtf8 edge cases ---
+
+func TestParseStrings_InvalidOffset(t *testing.T) {
+	raw := make([]byte, 20)
+	binary.LittleEndian.PutUint32(raw[0:], 999) // string_id[0] → offset 999 (out of range)
+	_, _, err := ParseStrings(raw, 1, 0)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid offset")
+}
+
+func TestParseStrings_MalformedUtf8(t *testing.T) {
+	// ULEB128 length pointing past end of data
+	raw := make([]byte, 12)
+	binary.LittleEndian.PutUint32(raw[0:], 4) // string_id[0] → offset 4
+	raw[4] = 0x80                             // ULEB128 continuation but no next byte at boundary
+	raw[5] = 0x80
+	raw[6] = 0x80
+	raw[7] = 0x80
+	raw[8] = 0x80 // 5-byte overflow
+	raw[9] = 0x01
+	_, _, err := ParseStrings(raw, 1, 0)
+	require.Error(t, err)
+}
+
+func TestParseSection_MultipleDexes(t *testing.T) {
+	dex0 := buildMinDex(1)
+	dex1 := buildMinDex(2)
+	raw := make([]byte, 300)
+	copy(raw[60:], dex0)
+	copy(raw[60+0x70:], dex1)
+	s := model.VdexSection{Offset: 60, Size: uint32(0x70 * 2)}
+	ctxs, _ := ParseSection(raw, s, 2)
+	assert.Len(t, ctxs, 2)
+	assert.Equal(t, 0, ctxs[0].Rep.Index)
+	assert.Equal(t, 1, ctxs[1].Rep.Index)
+}
+
+func TestParse_HeaderSizeExceedsFileSize(t *testing.T) {
+	raw := buildMinDex(0)
+	binary.LittleEndian.PutUint32(raw[0x24:], 0x1000) // header_size > file_size
+	_, _, err := Parse(raw, 0)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "header_size")
+}

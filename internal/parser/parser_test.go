@@ -383,3 +383,63 @@ func TestParseVdex_DiagnosticCodes(t *testing.T) {
 		})
 	}
 }
+
+func TestParseVdex_ChecksumSectionCorrupted(t *testing.T) {
+	header := buildRawHeader("vdex", "027\x00", 4)
+	var sectionBuf []byte
+	// Checksum section offset beyond file
+	sectionBuf = appendSectionHeader(sectionBuf, 0, 9999, 4)
+	sectionBuf = appendSectionHeader(sectionBuf, 1, 0, 0)
+	sectionBuf = appendSectionHeader(sectionBuf, 2, 0, 0)
+	sectionBuf = appendSectionHeader(sectionBuf, 3, 0, 0)
+	raw := append(header, sectionBuf...)
+
+	tmpFile := filepath.Join(t.TempDir(), "badchk.vdex")
+	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
+
+	report, _, err := ParseVdex(tmpFile, false)
+	require.Error(t, err)
+	require.NotNil(t, report)
+	assert.NotEmpty(t, report.Errors)
+}
+
+func TestParseVdex_ChecksumOddSize(t *testing.T) {
+	header := buildRawHeader("vdex", "027\x00", 4)
+	checksumOff := uint32(60)
+	checksumSize := uint32(5) // not multiple of 4
+
+	var sectionBuf []byte
+	sectionBuf = appendSectionHeader(sectionBuf, 0, checksumOff, checksumSize)
+	sectionBuf = appendSectionHeader(sectionBuf, 1, 0, 0)
+	sectionBuf = appendSectionHeader(sectionBuf, 2, checksumOff+checksumSize, 0)
+	sectionBuf = appendSectionHeader(sectionBuf, 3, checksumOff+checksumSize, 0)
+
+	raw := append(header, sectionBuf...)
+	raw = append(raw, 0, 0, 0, 0, 0) // 5 bytes checksum data
+
+	tmpFile := filepath.Join(t.TempDir(), "oddchk.vdex")
+	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
+
+	report, _, _ := ParseVdex(tmpFile, false)
+	require.NotNil(t, report)
+	assert.Len(t, report.Checksums, 1) // 5/4 = 1
+	hasAlignWarn := false
+	for _, w := range report.Warnings {
+		if containsStr(w, "multiple of 4") {
+			hasAlignWarn = true
+		}
+	}
+	assert.True(t, hasAlignWarn)
+}
+
+func containsStr(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > 0 && findSubstr(s, substr))
+}
+func findSubstr(s, sub string) bool {
+	for i := 0; i <= len(s)-len(sub); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}
