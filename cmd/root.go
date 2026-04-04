@@ -21,14 +21,22 @@ const (
 	FormatCoverage OutputFormat = "coverage"
 )
 
-// Shared flags bound at the root level.
+// Shared flags — truly global (applicable to all subcommands).
 var (
-	flagJSON        bool
-	flagFormat      string
-	flagMeanings    bool
-	flagStrict      bool
-	flagStrictWarn  string
-	flagInputPath   string
+	flagJSON   bool
+	flagFormat string
+)
+
+// Flags shared by parse, extract-dex, and modify (not dump/version).
+var (
+	flagMeanings   bool
+	flagStrict     bool
+	flagStrictWarn string
+	flagInputPath  string
+)
+
+// Flags specific to parse (and root when used as parse shorthand).
+var (
 	flagExtractDir  string
 	flagExtractTmpl string
 	flagExtractCont bool
@@ -72,17 +80,25 @@ func Execute() {
 }
 
 func init() {
+	// Truly global: output format applies to every subcommand.
 	pf := rootCmd.PersistentFlags()
-	pf.StringVarP(&flagInputPath, "in", "i", "", "input vdex path (alternative to positional arg)")
 	pf.BoolVar(&flagJSON, "json", false, "shorthand for --format json")
 	pf.StringVar(&flagFormat, "format", "", "output format: text, json, jsonl, summary, sections, coverage")
+
+	// Shared by commands that process VDEX files (parse, extract-dex, modify).
+	// Registered on root so they work for the root-as-parse shorthand.
+	pf.StringVarP(&flagInputPath, "in", "i", "", "input vdex path (alternative to positional arg)")
 	pf.BoolVar(&flagMeanings, "show-meaning", true, "include field descriptions in output")
 	pf.BoolVar(&flagStrict, "strict", false, "treat matched warnings as fatal errors")
 	pf.StringVar(&flagStrictWarn, "strict-warn", "", `comma-separated patterns; prefix "re:" for regex`)
-	pf.StringVar(&flagExtractDir, "extract-dex", "", "extract embedded dex files into this directory (parse only)")
-	pf.StringVar(&flagExtractTmpl, "extract-name-template", model.DefaultNameTemplate,
+
+	// Extract flags: only meaningful for parse (and root-as-parse).
+	// Registered on parse and root; NOT on modify/dump/version.
+	rf := rootCmd.Flags()
+	rf.StringVar(&flagExtractDir, "extract-dex", "", "extract embedded dex files into this directory")
+	rf.StringVar(&flagExtractTmpl, "extract-name-template", model.DefaultNameTemplate,
 		"template for extracted dex file names: {base}, {index}, {checksum}, {checksum_hex}, {offset}, {size}")
-	pf.BoolVar(&flagExtractCont, "extract-continue-on-error", false, "continue extracting when one dex fails")
+	rf.BoolVar(&flagExtractCont, "extract-continue-on-error", false, "continue extracting when one dex fails")
 
 	rootCmd.AddCommand(parseCmd, extractDexCmd, modifyCmd, dumpCmd, versionCmd)
 }

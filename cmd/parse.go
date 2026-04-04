@@ -48,6 +48,13 @@ Supported formats:
 
 func init() {
 	rootCmd.RunE = runParse
+
+	// Extract flags also available on parse subcommand (shared with root).
+	pf := parseCmd.Flags()
+	pf.StringVar(&flagExtractDir, "extract-dex", "", "extract embedded dex files into this directory")
+	pf.StringVar(&flagExtractTmpl, "extract-name-template", model.DefaultNameTemplate,
+		"template for extracted dex file names: {base}, {index}, {checksum}, {checksum_hex}, {offset}, {size}")
+	pf.BoolVar(&flagExtractCont, "extract-continue-on-error", false, "continue extracting when one dex fails")
 }
 
 func runParse(_ *cobra.Command, args []string) error {
