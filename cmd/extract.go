@@ -24,7 +24,12 @@ Use --extract-continue-on-error to skip failures and continue.`,
   vdexcli extract-dex --json app.vdex ./out/
   vdexcli extract-dex --extract-name-template "{base}_{index}_{checksum_hex}.dex" app.vdex ./out/
   vdexcli extract-dex --extract-continue-on-error app.vdex ./out/`,
-	Args: cobra.ExactArgs(2),
+	Args: func(cmd *cobra.Command, args []string) error {
+		if len(args) != 2 {
+			return fmt.Errorf("requires <file.vdex> and <out-dir>; usage: vdexcli extract-dex app.vdex ./out/")
+		}
+		return nil
+	},
 	RunE: runExtractDex,
 }
 

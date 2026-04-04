@@ -21,7 +21,12 @@ Exit code 0 if identical, 1 if different.`,
 	Example: `  vdexcli diff before.vdex after.vdex
   vdexcli diff --json before.vdex after.vdex
   vdexcli diff --format summary before.vdex after.vdex`,
-	Args: cobra.ExactArgs(2),
+	Args: func(cmd *cobra.Command, args []string) error {
+		if len(args) != 2 {
+			return fmt.Errorf("requires exactly 2 files; usage: vdexcli diff <a.vdex> <b.vdex>")
+		}
+		return nil
+	},
 	PreRunE: func(cmd *cobra.Command, _ []string) error {
 		g := getGlobalOpts(cmd)
 		return presenter.ValidateFormat(g.Format)

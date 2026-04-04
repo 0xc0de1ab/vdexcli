@@ -213,7 +213,7 @@ func TestE2E_ExtractDex_Summary(t *testing.T) {
 func TestE2E_ExtractDex_MissingArgs(t *testing.T) {
 	_, stderr, code := runCLI(t, "extract-dex", testVdexPath)
 	assert.NotEqual(t, 0, code)
-	assert.Contains(t, stderr, "accepts 2 arg")
+	assert.Contains(t, stderr, "requires")
 }
 
 // --- modify ---
@@ -418,7 +418,7 @@ func TestE2E_Diff_InvalidFormat(t *testing.T) {
 func TestE2E_Diff_MissingArg(t *testing.T) {
 	_, stderr, code := runCLI(t, "diff", testVdexPath)
 	assert.NotEqual(t, 0, code)
-	assert.Contains(t, stderr, "accepts 2 arg")
+	assert.Contains(t, stderr, "requires exactly 2 files")
 }
 
 func TestE2E_Diff_NonexistentFile(t *testing.T) {

@@ -53,14 +53,14 @@ func init() {
 }
 
 func runParse(cmd *cobra.Command, args []string) error {
-	path, _ := resolveInputPath(cmd, args)
+	path, err := resolveInputPath(cmd, args)
+	if err != nil {
+		return err
+	}
 	p := getParseOpts(cmd)
 
 	report, raw, err := parser.ParseVdex(path, p.Meanings)
 	parseErr := err
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "parse error: %v\n", err)
-	}
 
 	var extractErr error
 	if report != nil && p.ExtractDir != "" {
