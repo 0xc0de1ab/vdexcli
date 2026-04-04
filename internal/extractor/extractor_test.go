@@ -189,6 +189,110 @@ func TestExtract_ConvenienceFunction(t *testing.T) {
 	assert.Equal(t, 1, res.Extracted)
 }
 
+func TestExtractor_MkdirAllFails(t *testing.T) {
+	fs := &failMkdirFS{}
+	ext := &Extractor{FS: fs, Renderer: &TemplateRenderer{}}
+	dexes := []model.DexReport{{Index: 0, Offset: 0, Size: 10}}
+	res, err := ext.Extract("app.vdex", make([]byte, 64), dexes, "/out", Options{})
+	require.Error(t, err)
+	assert.Equal(t, 1, res.Failed)
+}
+
+type failMkdirFS struct{}
+
+func (failMkdirFS) MkdirAll(_ string, _ os.FileMode) error        { return fmt.Errorf("mkdir failed") }
+func (failMkdirFS) WriteFile(_ string, _ []byte, _ os.FileMode) error { return nil }
+func (failMkdirFS) Stat(_ string) (os.FileInfo, error)            { return nil, os.ErrNotExist }
+
+func TestExtractor_RendererError_Stops(t *testing.T) {
+	fs := newMockFS()
+	renderer := &errRenderer{}
+	ext := &Extractor{FS: fs, Renderer: renderer}
+	dexes := []model.DexReport{{Index: 0, Offset: 0, Size: 10}}
+	_, err := ext.Extract("app.vdex", make([]byte, 64), dexes, "/out", Options{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "render fail")
+}
+
+func TestExtractor_RendererError_ContinueOnError(t *testing.T) {
+	fs := newMockFS()
+	renderer := &errRenderer{}
+	ext := &Extractor{FS: fs, Renderer: renderer}
+	dexes := []model.DexReport{
+		{Index: 0, Offset: 0, Size: 10},
+		{Index: 1, Offset: 10, Size: 10},
+	}
+	res, err := ext.Extract("app.vdex", make([]byte, 64), dexes, "/out", Options{ContinueOnError: true})
+	require.NoError(t, err)
+	assert.Equal(t, 0, res.Extracted)
+	assert.Equal(t, 2, res.Failed)
+}
+
+type errRenderer struct{}
+
+func (errRenderer) Render(_, _ string, _ model.DexReport) (string, string, error) {
+	return "", "", fmt.Errorf("render fail")
+}
+
+func TestExtractor_WriteFileFails_ContinueOnError(t *testing.T) {
+	fs := &failWriteFS{}
+	ext := &Extractor{FS: fs, Renderer: &TemplateRenderer{}}
+	dexes := []model.DexReport{{Index: 0, Offset: 0, Size: 10}}
+	res, err := ext.Extract("app.vdex", make([]byte, 64), dexes, "/out", Options{ContinueOnError: true})
+	require.NoError(t, err)
+	assert.Equal(t, 0, res.Extracted)
+	assert.Equal(t, 1, res.Failed)
+	assert.NotEmpty(t, res.Warnings)
+}
+
+func TestExtractor_WriteFileFails_Stops(t *testing.T) {
+	fs := &failWriteFS{}
+	ext := &Extractor{FS: fs, Renderer: &TemplateRenderer{}}
+	dexes := []model.DexReport{{Index: 0, Offset: 0, Size: 10}}
+	_, err := ext.Extract("app.vdex", make([]byte, 64), dexes, "/out", Options{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "write failed")
+}
+
+type failWriteFS struct{}
+
+func (failWriteFS) MkdirAll(_ string, _ os.FileMode) error            { return nil }
+func (failWriteFS) WriteFile(_ string, _ []byte, _ os.FileMode) error { return fmt.Errorf("write failed") }
+func (failWriteFS) Stat(_ string) (os.FileInfo, error)                { return nil, os.ErrNotExist }
+
+func TestExtractor_UniquePathCollision(t *testing.T) {
+	// First path already exists on FS → should append _1
+	fs := newMockFS()
+	fs.statErr["/out/app.vdex_0_0.dex"] = nil // exists (no error = file found)
+	ext := &Extractor{FS: fs, Renderer: &TemplateRenderer{}}
+	dexes := []model.DexReport{{Index: 0, Offset: 0, Size: 10}}
+	res, err := ext.Extract("app.vdex", make([]byte, 64), dexes, "/out", Options{})
+	require.NoError(t, err)
+	assert.Equal(t, 1, res.Extracted)
+	// Should have written to _1 variant
+	assert.Contains(t, fs.files, "/out/app.vdex_0_0_1.dex")
+}
+
+func TestExtract_NilReport(t *testing.T) {
+	res, err := Extract("test.vdex", nil, nil, "/out", Options{})
+	require.NoError(t, err)
+	assert.Equal(t, 0, res.Extracted)
+}
+
+func TestExtract_EmptyDexes(t *testing.T) {
+	res, err := Extract("test.vdex", nil, &model.VdexReport{}, "/out", Options{})
+	require.NoError(t, err)
+	assert.Equal(t, 0, res.Extracted)
+}
+
+func TestTemplateRenderer_UnclosedBrace(t *testing.T) {
+	r := &TemplateRenderer{}
+	d := model.DexReport{Index: 0}
+	name, _, err := r.Render("prefix_{base", "app.vdex", d)
+	require.NoError(t, err)
+	assert.Contains(t, name, "prefix_{base")
+}
+
 // Verify interface compliance at compile time.
 var (
 	_ DexExtractor = (*Extractor)(nil)
