@@ -1,34 +1,41 @@
 # vdexcli
 
-A CLI tool for parsing, extracting, and modifying Android ART VDEX (`.vdex`) files.
+See every byte of an Android VDEX file. Parse, extract, diff, and patch — from the command line.
 
-Parses every byte of a VDEX v027 file — header, section table, checksums, embedded DEX files, verifier dependencies, and type lookup tables — and reports structural details in human-readable text or machine-readable JSON.
-
-## Features
-
-- **Parse** — Full structural dump of VDEX files with byte-level coverage tracking
-- **Extract-dex** — Pull embedded DEX files out of a VDEX container
-- **Modify** — Patch the verifier-deps section via JSON (replace or merge mode)
-- **Dump** — Print human-readable descriptions of every parsed field
-- **Byte coverage** — Quantitative report showing which byte ranges are parsed vs. gaps
-- **ART-compatible encoding** — Verifier-deps offsets use section-absolute addressing, matching the AOSP ART runtime
+```bash
+$ vdexcli parse app.vdex
+vdex magic="vdex" version="027" sections=4
+  kChecksumSection      off=0x3c   size=4
+  kDexFileSection       off=0x40   size=112
+  kVerifierDepsSection  off=0xb0   size=28
+verifier_deps:
+  [dex 0] verified=246 unverified=87 pairs=565 extras=7
+byte_coverage: 2256/2256 bytes (100.0%)
+```
 
 ## Quick Start
 
 ```bash
-# 1. Install
 go install github.com/0xc0de1ab/vdexcli@latest
 
-# 2. Parse — see every byte of a VDEX file
-vdexcli parse app.vdex
-
-# 3. Act — extract DEX, compare builds, or patch verifier deps
-vdexcli extract-dex app.vdex ./out/
-vdexcli diff before.vdex after.vdex
-vdexcli modify --verifier-json patch.json input.vdex output.vdex
+vdexcli parse app.vdex                    # full structural dump
+vdexcli parse --json app.vdex             # machine-readable JSON
+vdexcli extract-dex app.vdex ./out/       # pull embedded DEX files
+vdexcli diff before.vdex after.vdex       # compare two builds
+vdexcli modify --verifier-json patch.json in.vdex out.vdex  # patch verifier deps
 ```
 
-More examples: [CI pipelines](#pipeline-batch-scan-with-summary), [output formats](#example-output), [diagnostics](#diagnostics-with-actionable-hints).
+## Features
+
+- **Parse** — Headers, sections, checksums, DEX files, verifier deps, type lookup tables — with byte-level coverage
+- **Extract** — Pull embedded DEX files for disassembly with jadx/baksmali
+- **Modify** — Patch verifier-deps section via JSON (replace or merge mode)
+- **Diff** — Structural comparison of two VDEX files (exit 0=identical, 1=different)
+- **Diagnostics** — 34 error/warning codes with [actionable hints](#diagnostics-with-actionable-hints)
+- **7 output formats** — text, json, jsonl, summary, sections, coverage, table
+- **ART-compatible** — Section-absolute offsets matching AOSP ART runtime encoding
+
+More: [output examples](#example-output), [CI integration](#diagnostics-with-actionable-hints), [error handling](#error-handling).
 
 ### Use Cases
 
