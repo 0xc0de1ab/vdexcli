@@ -56,6 +56,16 @@ func parseVerifierDex(raw []byte, sectionStart int, blockStart int, sectionEnd i
 		baseStrings = dexes[dexIdx].Strings
 	}
 
+	// When DEX section is absent (DM format), class_def_count is unknown.
+	// Infer it from the verifier block's class offset table structure.
+	if numClass == 0 && blockStart < sectionEnd {
+		inferred := inferClassCount(raw, sectionStart, blockStart, sectionEnd)
+		if inferred > 0 {
+			numClass = inferred
+			warnings = append(warnings, fmt.Sprintf("dex %d: inferred class_def_count=%d from verifier section (DM format)", dexIdx, numClass))
+		}
+	}
+
 	if blockStart+4*(numClass+1) > sectionEnd {
 		warnings = append(warnings, fmt.Sprintf("dex %d verifier block truncated", dexIdx))
 		return out, warnings
@@ -162,6 +172,61 @@ func parseVerifierDex(raw []byte, sectionStart int, blockStart int, sectionEnd i
 	}
 
 	return out, warnings
+}
+
+// inferClassCount determines class_def_count from the verifier block's
+// class offset table when the DEX section is absent (DM format).
+//
+// The offset table has class_count+1 entries (last is sentinel). Each entry
+// is either NotVerifiedMarker (0xFFFFFFFF) or a section-absolute offset
+// pointing into the assignability data area. Valid offsets are:
+//   - monotonically non-decreasing among verified classes
+//   - within [blockRelOffset, sectionSize)
+//
+// We scan uint32 values from blockStart until a value falls outside
+// the valid range, then class_count = entries_read - 1.
+func inferClassCount(raw []byte, sectionStart int, blockStart int, sectionEnd int) int {
+	sectionSize := sectionEnd - sectionStart
+	blockRel := blockStart - sectionStart
+
+	maxEntries := (sectionEnd - blockStart) / 4
+	if maxEntries <= 1 {
+		return 0
+	}
+	// Cap to avoid scanning huge sections
+	if maxEntries > 0x10000 {
+		maxEntries = 0x10000
+	}
+
+	lastValid := uint32(0)
+	count := 0
+	for i := 0; i < maxEntries; i++ {
+		off := blockStart + i*4
+		if off+4 > sectionEnd {
+			break
+		}
+		val := binutil.ReadU32(raw, off)
+		if val == model.NotVerifiedMarker {
+			count++
+			continue
+		}
+		// Offset must be within section range.
+		if val < uint32(blockRel) || val >= uint32(sectionSize) {
+			break
+		}
+		// Offsets among verified classes must be non-decreasing.
+		if lastValid > 0 && val < lastValid {
+			break
+		}
+		lastValid = val
+		count++
+	}
+
+	// Subtract 1 for the sentinel entry.
+	if count < 2 {
+		return 0
+	}
+	return count - 1
 }
 
 func resolveVerifierString(dexStrings []string, extras []string, extraBase uint32, id uint32) string {

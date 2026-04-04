@@ -28,11 +28,12 @@ Use --extract-continue-on-error to skip failures and continue.`,
 	RunE: runExtractDex,
 }
 
-func runExtractDex(_ *cobra.Command, args []string) error {
+func runExtractDex(cmd *cobra.Command, args []string) error {
 	vdexPath := args[0]
 	outDir := args[1]
+	p := getParseOpts(cmd)
 
-	report, raw, err := parser.ParseVdex(vdexPath, flagMeanings)
+	report, raw, err := parser.ParseVdex(vdexPath, p.Meanings)
 	parseErr := err
 	if err != nil && report == nil {
 		return err
@@ -45,8 +46,8 @@ func runExtractDex(_ *cobra.Command, args []string) error {
 	}
 
 	opts := extractor.Options{
-		NameTemplate:    flagExtractTmpl,
-		ContinueOnError: flagExtractCont,
+		NameTemplate:    p.ExtractTmpl,
+		ContinueOnError: p.ExtractCont,
 	}
 	res, err := extractor.Extract(vdexPath, raw, report, outDir, opts)
 	report.Warnings = append(report.Warnings, res.Warnings...)
@@ -55,7 +56,7 @@ func runExtractDex(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("extract-dex: %w", err)
 	}
 
-	if strictMatched := applyStrict(report); len(strictMatched) > 0 {
+	if strictMatched := applyStrict(cmd, report); len(strictMatched) > 0 {
 		return fmt.Errorf("strict mode: %d matching warning(s): %v", len(strictMatched), strictMatched)
 	}
 
@@ -64,7 +65,7 @@ func runExtractDex(_ *cobra.Command, args []string) error {
 		File:               vdexPath,
 		Size:               len(raw),
 		ExtractDir:         outDir,
-		NameTemplate:       flagExtractTmpl,
+		NameTemplate:       p.ExtractTmpl,
 		Extracted:          res.Extracted,
 		Failed:             res.Failed,
 		Warnings:           report.Warnings,
@@ -73,7 +74,7 @@ func runExtractDex(_ *cobra.Command, args []string) error {
 	}
 
 	w := os.Stdout
-	switch resolvedFormat() {
+	switch resolvedFormat(cmd) {
 	case FormatJSON:
 		return presenter.WriteJSON(w, summary)
 	case FormatJSONL:

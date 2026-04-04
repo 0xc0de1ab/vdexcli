@@ -16,16 +16,6 @@ import (
 	"github.com/0xc0de1ab/vdexcli/internal/presenter"
 )
 
-var (
-	flagVerifierJSON string
-	flagModifyMode   string
-	flagDryRun       bool
-	flagVerify       bool
-	flagQuiet        bool
-	flagForce        bool
-	flagLogFile      string
-)
-
 var modifyCmd = &cobra.Command{
 	Use:   "modify [flags] <input.vdex> <output.vdex>",
 	Short: "Modify the verifier-deps section using a JSON patch",
@@ -42,36 +32,26 @@ The output file is written atomically (temp file + rename).`,
   cat patch.json | vdexcli modify --verifier-json - in.vdex out.vdex
   vdexcli modify --log-file modify.log --verifier-json patch.json in.vdex out.vdex`,
 	Args: cobra.ExactArgs(2),
-	PreRunE: func(_ *cobra.Command, args []string) error {
-		if flagVerify {
-			flagDryRun = true
+	PreRunE: func(cmd *cobra.Command, args []string) error {
+		m := getModifyOpts(cmd)
+		if m.Verify {
+			m.DryRun = true
 		}
-		if strings.TrimSpace(flagVerifierJSON) == "" {
+		if strings.TrimSpace(m.VerifierJSON) == "" {
 			return fmt.Errorf("--verifier-json is required")
 		}
-		mode := strings.ToLower(strings.TrimSpace(flagModifyMode))
+		mode := strings.ToLower(strings.TrimSpace(m.Mode))
 		if mode != "replace" && mode != "merge" {
-			return fmt.Errorf("unsupported --mode %q; supported: replace, merge", flagModifyMode)
+			return fmt.Errorf("unsupported --mode %q; supported: replace, merge", m.Mode)
 		}
-		flagModifyMode = mode
-		return validateOutputPath(args)
+		return validateOutputPath(cmd, args)
 	},
 	RunE: runModify,
 }
 
-func init() {
-	f := modifyCmd.Flags()
-	f.StringVar(&flagVerifierJSON, "verifier-json", "", "path to verifier patch JSON (use - for stdin)")
-	f.StringVar(&flagModifyMode, "mode", "replace", "patch mode: replace|merge")
-	f.BoolVar(&flagDryRun, "dry-run", false, "validate and report changes without writing")
-	f.BoolVar(&flagVerify, "verify", false, "alias for --dry-run")
-	f.BoolVar(&flagQuiet, "quiet", false, "suppress text-mode summary output")
-	f.BoolVar(&flagForce, "force", false, "allow output path equal to input path")
-	f.StringVar(&flagLogFile, "log-file", "", "append result as NDJSON to file")
-}
-
-func validateOutputPath(args []string) error {
-	if flagVerify || flagDryRun {
+func validateOutputPath(cmd *cobra.Command, args []string) error {
+	m := getModifyOpts(cmd)
+	if m.Verify || m.DryRun {
 		return nil
 	}
 	inAbs, err1 := filepath.Abs(args[0])
@@ -80,17 +60,23 @@ func validateOutputPath(args []string) error {
 		inAbs = filepath.Clean(args[0])
 		outAbs = filepath.Clean(args[1])
 	}
-	if !flagForce && inAbs == outAbs {
+	if !m.Force && inAbs == outAbs {
 		return fmt.Errorf("output path equals input path; add --force to allow in-place overwrite")
 	}
 	return nil
 }
 
-func runModify(_ *cobra.Command, args []string) error {
+func runModify(cmd *cobra.Command, args []string) error {
+	m := getModifyOpts(cmd)
+	p := getParseOpts(cmd)
+	if m.Verify {
+		m.DryRun = true
+	}
+	m.Mode = strings.ToLower(strings.TrimSpace(m.Mode))
+
 	inPath, outPath := args[0], args[1]
 
-	// 1. Parse input VDEX
-	report, raw, err := parser.ParseVdex(inPath, flagMeanings)
+	report, raw, err := parser.ParseVdex(inPath, p.Meanings)
 	parseErr := err
 	if err != nil && report == nil {
 		return err
@@ -102,28 +88,24 @@ func runModify(_ *cobra.Command, args []string) error {
 		report.Errors = append(report.Errors, err.Error())
 	}
 
-	// 2. Load and validate patch
-	patch, patchWarn, err := modifier.ParseVerifierPatch(flagVerifierJSON)
+	patch, patchWarn, err := modifier.ParseVerifierPatch(m.VerifierJSON)
 	if err != nil {
-		return fmt.Errorf("load verifier patch %q: %w", flagVerifierJSON, err)
+		return fmt.Errorf("load verifier patch %q: %w", m.VerifierJSON, err)
 	}
 	report.Warnings = append(report.Warnings, patchWarn...)
 
 	if patch.Mode == "" {
-		patch.Mode = flagModifyMode
-	} else if patch.Mode != flagModifyMode {
-		return fmt.Errorf("patch mode %q conflicts with --mode %q", patch.Mode, flagModifyMode)
+		patch.Mode = m.Mode
+	} else if patch.Mode != m.Mode {
+		return fmt.Errorf("patch mode %q conflicts with --mode %q", patch.Mode, m.Mode)
 	}
 
 	patchStats := countPatchStats(patch)
-
-	// 3. Find verifier section
 	section, err := findVerifierSection(report, raw)
 	if err != nil {
 		return err
 	}
 
-	// 4. Build new verifier payload
 	newPayload, buildWarn, err := buildPayload(report, raw, section, patch)
 	report.Warnings = append(report.Warnings, buildWarn...)
 	if err != nil {
@@ -133,20 +115,13 @@ func runModify(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("verifier payload too large: %d bytes > section size %d", len(newPayload), section.Size)
 	}
 
-	// 5. Compare old vs new
 	diff, dexDiffs, diffWarn, compareErr := modifier.CompareVerifierSectionDiff(raw, section, report.Dexes, report.Checksums, newPayload)
 	report.Warnings = append(report.Warnings, diffWarn...)
 
-	// 6. Build summary
-	summary := buildModifySummary(inPath, outPath, patch, patchStats, report, section, newPayload, diff, dexDiffs, parseErr, compareErr)
+	summary := buildModifySummary(inPath, outPath, patch, patchStats, report, section, newPayload, diff, dexDiffs, m, parseErr, compareErr)
+	strictMatched := applyStrictModify(cmd, report, &summary)
+	writeErr := writeOutput(raw, section, newPayload, outPath, &summary, m)
 
-	// 7. Apply strict
-	strictMatched := applyStrictModify(report, &summary)
-
-	// 8. Write output
-	writeErr := writeOutput(raw, section, newPayload, outPath, &summary)
-
-	// 9. Compute failure info
 	failureReason := modifier.MakeFailureReason(summary, parseErr, compareErr, writeErr, strictMatched)
 	failureCategory := modifier.MakeFailureCategory(summary, parseErr, compareErr, writeErr, strictMatched)
 	summary.FailureCategory = failureCategory
@@ -157,23 +132,21 @@ func runModify(_ *cobra.Command, args []string) error {
 		summary.Errors = append(summary.Errors, failureReason)
 	}
 
-	// 10. Append log
-	if flagLogFile != "" {
+	if m.LogFile != "" {
 		logArgs := map[string]string{
-			"verifier_json": flagVerifierJSON, "mode": flagModifyMode,
-			"dry_run": fmt.Sprintf("%v", flagDryRun), "quiet": fmt.Sprintf("%v", flagQuiet),
-			"force": fmt.Sprintf("%v", flagForce), "strict": fmt.Sprintf("%v", flagStrict),
-			"strict_warn": flagStrictWarn, "verify": fmt.Sprintf("%v", flagVerify),
-			"log_file": flagLogFile,
+			"verifier_json": m.VerifierJSON, "mode": m.Mode,
+			"dry_run": fmt.Sprintf("%v", m.DryRun), "quiet": fmt.Sprintf("%v", m.Quiet),
+			"force": fmt.Sprintf("%v", m.Force), "strict": fmt.Sprintf("%v", p.Strict),
+			"strict_warn": p.StrictWarn, "verify": fmt.Sprintf("%v", m.Verify),
+			"log_file": m.LogFile,
 		}
-		if err := modifier.AppendModifyLog(flagLogFile, summary, logArgs, strictMatched, failureReason, failureCategory); err != nil {
+		if err := modifier.AppendModifyLog(m.LogFile, summary, logArgs, strictMatched, failureReason, failureCategory); err != nil {
 			return err
 		}
 	}
 
-	// 11. Output
 	w := os.Stdout
-	switch resolvedFormat() {
+	switch resolvedFormat(cmd) {
 	case FormatJSON:
 		if err := presenter.WriteJSON(w, summary); err != nil {
 			return err
@@ -194,7 +167,7 @@ func runModify(_ *cobra.Command, args []string) error {
 		presenter.WriteModifySummary(w, summary)
 		return firstError(strictMatched, failureReason, compareErr, parseErr, writeErr)
 	default:
-		printModifyText(summary, section, newPayload, failureCategory, failureReason, strictMatched, report)
+		printModifyText(summary, section, newPayload, failureCategory, failureReason, strictMatched, report, m)
 		return firstError(strictMatched, failureReason, compareErr, parseErr, writeErr)
 	}
 }
@@ -235,13 +208,13 @@ func buildPayload(report *model.VdexReport, raw []byte, section model.VdexSectio
 func buildModifySummary(inPath, outPath string, patch model.VerifierPatchSpec, ps patchStats,
 	report *model.VdexReport, section model.VdexSection, newPayload []byte,
 	diff model.VerifierSectionDiff, dexDiffs []model.ModifyDexDiff,
-	parseErr, compareErr error) model.ModifySummary {
+	m ModifyOpts, parseErr, compareErr error) model.ModifySummary {
 	s := model.ModifySummary{
 		SchemaVersion:         model.VdexSchemaVersion,
 		InputFile:             inPath,
 		OutputFile:            outPath,
 		Mode:                  patch.Mode,
-		DryRun:                flagDryRun,
+		DryRun:                m.DryRun,
 		Status:                "ok",
 		PatchDexes:            ps.dexes,
 		PatchClasses:          ps.classes,
@@ -253,7 +226,7 @@ func buildModifySummary(inPath, outPath string, patch model.VerifierPatchSpec, p
 		ModifiedClasses:       diff.ModifiedClasses,
 		UnmodifiedClasses:     diff.UnmodifiedClasses,
 		DexDiffs:              dexDiffs,
-		ClassChangePercent:    calcPercent(diff.ModifiedClasses, diff.TotalClasses),
+		ClassChangePercent:    binutil.CalcPercent(diff.ModifiedClasses, diff.TotalClasses),
 		Warnings:              report.Warnings,
 		WarningsByCategory:    presenter.GroupWarnings(report.Warnings),
 		Errors:                report.Errors,
@@ -272,11 +245,12 @@ func buildModifySummary(inPath, outPath string, patch model.VerifierPatchSpec, p
 	return s
 }
 
-func applyStrictModify(report *model.VdexReport, summary *model.ModifySummary) []string {
-	if !flagStrict {
+func applyStrictModify(cmd *cobra.Command, report *model.VdexReport, summary *model.ModifySummary) []string {
+	p := getParseOpts(cmd)
+	if !p.Strict {
 		return nil
 	}
-	matched, filterWarn := presenter.StrictMatchingWarnings(report.Warnings, flagStrictWarn)
+	matched, filterWarn := presenter.StrictMatchingWarnings(report.Warnings, p.StrictWarn)
 	if len(filterWarn) > 0 {
 		report.Warnings = append(report.Warnings, filterWarn...)
 		summary.Warnings = report.Warnings
@@ -288,8 +262,8 @@ func applyStrictModify(report *model.VdexReport, summary *model.ModifySummary) [
 	return matched
 }
 
-func writeOutput(raw []byte, section model.VdexSection, newPayload []byte, outPath string, summary *model.ModifySummary) error {
-	if summary.Status != "ok" || flagDryRun {
+func writeOutput(raw []byte, section model.VdexSection, newPayload []byte, outPath string, summary *model.ModifySummary, m ModifyOpts) error {
+	if summary.Status != "ok" || m.DryRun {
 		return nil
 	}
 	out := make([]byte, len(raw))
@@ -309,8 +283,8 @@ func writeOutput(raw []byte, section model.VdexSection, newPayload []byte, outPa
 }
 
 func printModifyText(s model.ModifySummary, section model.VdexSection, newPayload []byte,
-	failureCategory, failureReason string, strictMatched []string, report *model.VdexReport) {
-	if flagQuiet && s.Status == "ok" {
+	failureCategory, failureReason string, strictMatched []string, report *model.VdexReport, m ModifyOpts) {
+	if m.Quiet && s.Status == "ok" {
 		return
 	}
 	delta := len(newPayload) - int(section.Size)
@@ -348,7 +322,7 @@ func printModifyText(s model.ModifySummary, section model.VdexSection, newPayloa
 	fmt.Printf("verifier section size: old=%d new=%d delta=%+d\n", section.Size, len(newPayload), delta)
 
 	switch {
-	case flagDryRun:
+	case m.DryRun:
 		fmt.Println("modify output: dry-run (no file written)")
 	case s.Status != "ok":
 		fmt.Printf("modify output: skipped due to %s\n", s.Status)
@@ -356,7 +330,7 @@ func printModifyText(s model.ModifySummary, section model.VdexSection, newPayloa
 		fmt.Printf("modify output: wrote %s\n", s.OutputFile)
 	}
 
-	if len(report.Warnings) > 0 && (!flagQuiet || s.Status != "ok") {
+	if len(report.Warnings) > 0 && (!m.Quiet || s.Status != "ok") {
 		presenter.PrintGroupedWarnings(report.Warnings)
 	}
 }
@@ -374,8 +348,4 @@ func firstError(strictMatched []string, failureReason string, errs ...error) err
 		}
 	}
 	return nil
-}
-
-func calcPercent(v, total int) float64 {
-	return binutil.CalcPercent(v, total)
 }

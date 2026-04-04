@@ -18,9 +18,9 @@ Useful for understanding the JSON schema without a real VDEX file.`,
   vdexcli dump --json
   vdexcli dump --format jsonl`,
 	Args: cobra.NoArgs,
-	RunE: func(_ *cobra.Command, _ []string) error {
+	RunE: func(cmd *cobra.Command, _ []string) error {
 		m := parser.NewParserMeanings()
-		switch resolvedFormat() {
+		switch resolvedFormat(cmd) {
 		case FormatJSON:
 			return presenter.WriteJSON(os.Stdout, m)
 		case FormatJSONL:

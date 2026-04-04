@@ -28,9 +28,37 @@ type ParseDiagnostic struct {
 	Category Category
 	Code     DiagCode
 	Message  string
+	Hint     string // Actionable suggestion for the user.
 }
 
-func (d ParseDiagnostic) Error() string { return d.Message }
+func (d ParseDiagnostic) Error() string {
+	if d.Hint != "" {
+		return fmt.Sprintf("[%s] %s (hint: %s)", d.Code, d.Message, d.Hint)
+	}
+	return fmt.Sprintf("[%s] %s", d.Code, d.Message)
+}
+
+// ForJSON returns a structured representation for JSON output.
+func (d ParseDiagnostic) ForJSON() map[string]string {
+	m := map[string]string{
+		"code":     string(d.Code),
+		"severity": d.SeverityString(),
+		"category": string(d.Category),
+		"message":  d.Message,
+	}
+	if d.Hint != "" {
+		m["hint"] = d.Hint
+	}
+	return m
+}
+
+// SeverityString returns "error" or "warning".
+func (d ParseDiagnostic) SeverityString() string {
+	if d.Severity == SeverityError {
+		return "error"
+	}
+	return "warning"
+}
 
 // DiagCode identifies the specific type of diagnostic for programmatic handling.
 type DiagCode string
@@ -89,62 +117,78 @@ const (
 
 func DiagFileTooSmall(fileSize int) ParseDiagnostic {
 	return ParseDiagnostic{SeverityError, CatHeader, ErrFileTooSmall,
-		fmt.Sprintf("file too small for VDEX header: %d bytes (need >= 12)", fileSize)}
+		fmt.Sprintf("file too small for VDEX header: %d bytes (need >= 12)", fileSize),
+		"verify the file is a complete VDEX and not truncated during copy"}
 }
 
 func DiagInvalidMagic(got string) ParseDiagnostic {
 	return ParseDiagnostic{SeverityError, CatHeader, ErrInvalidMagic,
-		fmt.Sprintf("invalid VDEX magic: got %q, expected \"vdex\"", got)}
+		fmt.Sprintf("invalid VDEX magic: got %q, expected \"vdex\"", got),
+		"this file is not a VDEX; check if it is an OAT, DEX, or unrelated file"}
 }
 
 func DiagVersionMismatch(expected, got string) ParseDiagnostic {
 	return ParseDiagnostic{SeverityWarning, CatHeader, WarnVersionMismatch,
-		fmt.Sprintf("VDEX version mismatch: got %q, expected %q", got, expected)}
+		fmt.Sprintf("VDEX version mismatch: got %q, expected %q", got, expected),
+		"this VDEX may be from a different Android version; parsing continues but results may be incomplete"}
 }
 
 func DiagSectionTableTruncated(need, have int) ParseDiagnostic {
 	return ParseDiagnostic{SeverityError, CatSection, ErrSectionTableTrunc,
-		fmt.Sprintf("file too small for section header table: need %d bytes, have %d", need, have)}
+		fmt.Sprintf("file too small for section header table: need %d bytes, have %d", need, have),
+		"the file appears truncated; re-extract from the device or build output"}
 }
 
 func DiagChecksumExceedsFile() ParseDiagnostic {
 	return ParseDiagnostic{SeverityError, CatChecksum, ErrChecksumExceedsFile,
-		"checksum section exceeds file boundary"}
+		"checksum section exceeds file boundary",
+		"file may be truncated or the section header table is corrupted"}
 }
 
 func DiagChecksumAlignment() ParseDiagnostic {
 	return ParseDiagnostic{SeverityWarning, CatChecksum, WarnChecksumAlignment,
-		"checksum section size is not a multiple of 4"}
+		"checksum section size is not a multiple of 4",
+		"non-standard section size; the last checksum entry may be incomplete"}
 }
 
 func DiagNoChecksumSection() ParseDiagnostic {
 	return ParseDiagnostic{SeverityWarning, CatChecksum, WarnNoChecksumSection,
-		"no checksum section found; dex count inferred from dex section"}
+		"no checksum section found; dex count inferred from dex section",
+		"this is normal for some DM-format VDEX files"}
 }
 
 func DiagSectionExceedsFile(kind uint32, offset, size uint32) ParseDiagnostic {
 	return ParseDiagnostic{SeverityWarning, CatSection, WarnSectionExceedsFile,
-		fmt.Sprintf("section kind %d exceeds file: off=%#x size=%#x", kind, offset, size)}
+		fmt.Sprintf("section kind %d exceeds file: off=%#x size=%#x", kind, offset, size),
+		"section data extends past end of file; file may be truncated"}
 }
 
 func DiagSectionBeyondFile(kind uint32, offset uint32) ParseDiagnostic {
 	return ParseDiagnostic{SeverityWarning, CatSection, WarnSectionBeyondFile,
-		fmt.Sprintf("section kind %d starts beyond file: off=%#x", kind, offset)}
+		fmt.Sprintf("section kind %d starts beyond file: off=%#x", kind, offset),
+		"section offset points outside the file; header table may be corrupted"}
 }
 
 func DiagSectionZeroSize(kind uint32) ParseDiagnostic {
+	name := SectionName[kind]
+	if name == "" {
+		name = fmt.Sprintf("kind %d", kind)
+	}
 	return ParseDiagnostic{SeverityWarning, CatSection, WarnSectionZeroSize,
-		fmt.Sprintf("section kind %d has zero size", kind)}
+		fmt.Sprintf("section %s has zero size", name),
+		"this section is empty; normal for DM-format VDEX (no embedded DEX)"}
 }
 
 func DiagSectionOverlap(kindA, kindB uint32) ParseDiagnostic {
 	return ParseDiagnostic{SeverityWarning, CatSection, WarnSectionOverlap,
-		fmt.Sprintf("section kind %d overlaps section kind %d", kindA, kindB)}
+		fmt.Sprintf("section kind %d overlaps section kind %d", kindA, kindB),
+		"overlapping sections indicate a corrupted section header table"}
 }
 
 func DiagSectionDuplicate(kind uint32) ParseDiagnostic {
 	return ParseDiagnostic{SeverityWarning, CatSection, WarnSectionDuplicate,
-		fmt.Sprintf("duplicate section kind %d (only first occurrence used)", kind)}
+		fmt.Sprintf("duplicate section kind %d (only first occurrence used)", kind),
+		"non-standard VDEX; the second section of the same kind is ignored"}
 }
 
 // UnknownSectionName formats a name for an unrecognized section kind.

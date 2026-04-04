@@ -249,3 +249,49 @@ func TestResolveVerifierString_ExtraString(t *testing.T) {
 func TestResolveVerifierString_OutOfRange(t *testing.T) {
 	assert.Equal(t, "string_99", resolveVerifierString(nil, nil, 0, 99))
 }
+
+// --- inferClassCount ---
+
+func TestInferClassCount_AllUnverified(t *testing.T) {
+	// 3 classes all unverified + sentinel
+	section := make([]byte, 100)
+	blockStart := 0
+	sectionStart := 0
+	sentinelOff := uint32(16) // (3+1)*4 = 16
+	for i := 0; i < 3; i++ {
+		binary.LittleEndian.PutUint32(section[i*4:], model.NotVerifiedMarker)
+	}
+	binary.LittleEndian.PutUint32(section[3*4:], sentinelOff) // sentinel
+	// Next value is data (breaks pattern)
+	binary.LittleEndian.PutUint32(section[4*4:], 0xDEADBEEF)
+
+	result := inferClassCount(section, sectionStart, blockStart, len(section))
+	assert.Equal(t, 3, result)
+}
+
+func TestInferClassCount_MixedVerified(t *testing.T) {
+	// 2 classes: class 0 verified at offset 12, class 1 unverified, sentinel at 14
+	section := make([]byte, 100)
+	binary.LittleEndian.PutUint32(section[0:], 12)                      // class 0 verified, data at 12
+	binary.LittleEndian.PutUint32(section[4:], model.NotVerifiedMarker) // class 1
+	binary.LittleEndian.PutUint32(section[8:], 14)                      // sentinel
+	// Data area
+	section[12] = 0x05
+	section[13] = 0x0A
+	// After sentinel: something that breaks pattern
+	binary.LittleEndian.PutUint32(section[14:], 0xFFFFFF00)
+
+	result := inferClassCount(section, 0, 0, len(section))
+	assert.Equal(t, 2, result)
+}
+
+func TestInferClassCount_TooSmall(t *testing.T) {
+	section := make([]byte, 4)
+	result := inferClassCount(section, 0, 0, len(section))
+	assert.Equal(t, 0, result)
+}
+
+func TestInferClassCount_Empty(t *testing.T) {
+	result := inferClassCount(nil, 0, 0, 0)
+	assert.Equal(t, 0, result)
+}

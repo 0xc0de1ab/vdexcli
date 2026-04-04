@@ -27,7 +27,8 @@ Supported formats:
   jsonl     Compact single-line JSON for log pipelines
   summary   One-line key=value for CI gates and monitoring
   sections  TSV table of section headers for grep/awk
-  coverage  Byte coverage report only`,
+  coverage  Byte coverage report only
+  table     Aligned columns with ANSI color`,
 	Example: `  vdexcli parse app.vdex
   vdexcli parse --json app.vdex
   vdexcli parse --format summary app.vdex
@@ -37,48 +38,43 @@ Supported formats:
   vdexcli parse --strict --strict-warn "checksum,version" app.vdex
   vdexcli parse --extract-dex ./out app.vdex`,
 	Args: cobra.MaximumNArgs(1),
-	PreRunE: func(_ *cobra.Command, args []string) error {
-		if _, err := resolveInputPath(args); err != nil {
+	PreRunE: func(cmd *cobra.Command, args []string) error {
+		if _, err := resolveInputPath(cmd, args); err != nil {
 			return err
 		}
-		return presenter.ValidateFormat(flagFormat)
+		g := getGlobalOpts(cmd)
+		return presenter.ValidateFormat(g.Format)
 	},
 	RunE: runParse,
 }
 
 func init() {
 	rootCmd.RunE = runParse
-
-	// Extract flags also available on parse subcommand (shared with root).
-	pf := parseCmd.Flags()
-	pf.StringVar(&flagExtractDir, "extract-dex", "", "extract embedded dex files into this directory")
-	pf.StringVar(&flagExtractTmpl, "extract-name-template", model.DefaultNameTemplate,
-		"template for extracted dex file names: {base}, {index}, {checksum}, {checksum_hex}, {offset}, {size}")
-	pf.BoolVar(&flagExtractCont, "extract-continue-on-error", false, "continue extracting when one dex fails")
 }
 
-func runParse(_ *cobra.Command, args []string) error {
-	path, _ := resolveInputPath(args)
+func runParse(cmd *cobra.Command, args []string) error {
+	path, _ := resolveInputPath(cmd, args)
+	p := getParseOpts(cmd)
 
-	report, raw, err := parser.ParseVdex(path, flagMeanings)
+	report, raw, err := parser.ParseVdex(path, p.Meanings)
 	parseErr := err
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "parse error: %v\n", err)
 	}
 
 	var extractErr error
-	if report != nil && flagExtractDir != "" {
+	if report != nil && p.ExtractDir != "" {
 		opts := extractor.Options{
-			NameTemplate:    flagExtractTmpl,
-			ContinueOnError: flagExtractCont,
+			NameTemplate:    p.ExtractTmpl,
+			ContinueOnError: p.ExtractCont,
 		}
-		res, e := extractor.Extract(path, raw, report, flagExtractDir, opts)
+		res, e := extractor.Extract(path, raw, report, p.ExtractDir, opts)
 		if e != nil {
 			extractErr = e
 			fmt.Fprintf(os.Stderr, "extract error: %v\n", e)
 		}
 		report.Warnings = append(report.Warnings, res.Warnings...)
-		if resolvedFormat() == FormatText {
+		if resolvedFormat(cmd) == FormatText {
 			fmt.Printf("extract summary: success=%d failed=%d\n", res.Extracted, res.Failed)
 		}
 	}
@@ -87,9 +83,9 @@ func runParse(_ *cobra.Command, args []string) error {
 		report.WarningsByCategory = presenter.GroupWarnings(report.Warnings)
 	}
 
-	strictMatched := applyStrict(report)
+	strictMatched := applyStrict(cmd, report)
 
-	if err := renderParseOutput(report); err != nil {
+	if err := renderParseOutput(cmd, report); err != nil {
 		return err
 	}
 
@@ -102,9 +98,9 @@ func runParse(_ *cobra.Command, args []string) error {
 	return extractErr
 }
 
-func renderParseOutput(report *model.VdexReport) error {
+func renderParseOutput(cmd *cobra.Command, report *model.VdexReport) error {
 	w := os.Stdout
-	switch resolvedFormat() {
+	switch resolvedFormat(cmd) {
 	case FormatJSON:
 		return presenter.WriteJSON(w, report)
 	case FormatJSONL:
@@ -123,11 +119,12 @@ func renderParseOutput(report *model.VdexReport) error {
 	return nil
 }
 
-func applyStrict(report *model.VdexReport) []string {
-	if !flagStrict || report == nil {
+func applyStrict(cmd *cobra.Command, report *model.VdexReport) []string {
+	p := getParseOpts(cmd)
+	if !p.Strict || report == nil {
 		return nil
 	}
-	matched, filterWarn := presenter.StrictMatchingWarnings(report.Warnings, flagStrictWarn)
+	matched, filterWarn := presenter.StrictMatchingWarnings(report.Warnings, p.StrictWarn)
 	if len(filterWarn) > 0 {
 		report.Warnings = append(report.Warnings, filterWarn...)
 		report.WarningsByCategory = presenter.GroupWarnings(report.Warnings)
