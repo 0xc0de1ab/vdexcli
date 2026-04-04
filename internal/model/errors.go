@@ -96,6 +96,7 @@ const (
 	ErrDexClassDefsRange   DiagCode = "ERR_DEX_CLASS_DEFS_RANGE"
 
 	// --- verifier warnings ---
+	WarnVerifierInferredCount   DiagCode = "WARN_VERIFIER_INFERRED_COUNT"
 	WarnVerifierSectionRange    DiagCode = "WARN_VERIFIER_SECTION_RANGE"
 	WarnVerifierIndexTruncated  DiagCode = "WARN_VERIFIER_INDEX_TRUNCATED"
 	WarnVerifierBlockOutside    DiagCode = "WARN_VERIFIER_BLOCK_OUTSIDE"
@@ -130,7 +131,7 @@ func DiagInvalidMagic(got string) ParseDiagnostic {
 func DiagVersionMismatch(expected, got string) ParseDiagnostic {
 	return ParseDiagnostic{SeverityWarning, CatHeader, WarnVersionMismatch,
 		fmt.Sprintf("VDEX version mismatch: got %q, expected %q", got, expected),
-		"this VDEX may be from a different Android version; parsing continues but results may be incomplete"}
+		fmt.Sprintf("vdexcli supports v%s (Android 12+); this file may parse partially or incorrectly", expected)}
 }
 
 func DiagSectionTableTruncated(need, have int) ParseDiagnostic {
@@ -142,13 +143,13 @@ func DiagSectionTableTruncated(need, have int) ParseDiagnostic {
 func DiagChecksumExceedsFile() ParseDiagnostic {
 	return ParseDiagnostic{SeverityError, CatChecksum, ErrChecksumExceedsFile,
 		"checksum section exceeds file boundary",
-		"file may be truncated or the section header table is corrupted"}
+		"re-extract the file from device; use `vdexcli parse --format sections` to inspect raw section headers"}
 }
 
 func DiagChecksumAlignment() ParseDiagnostic {
 	return ParseDiagnostic{SeverityWarning, CatChecksum, WarnChecksumAlignment,
 		"checksum section size is not a multiple of 4",
-		"non-standard section size; the last checksum entry may be incomplete"}
+		"last checksum entry may be incomplete; dex count derived from truncated section — verify with `--format sections`"}
 }
 
 func DiagNoChecksumSection() ParseDiagnostic {
@@ -159,14 +160,14 @@ func DiagNoChecksumSection() ParseDiagnostic {
 
 func DiagSectionExceedsFile(kind uint32, offset, size uint32) ParseDiagnostic {
 	return ParseDiagnostic{SeverityWarning, CatSection, WarnSectionExceedsFile,
-		fmt.Sprintf("section kind %d exceeds file: off=%#x size=%#x", kind, offset, size),
-		"section data extends past end of file; file may be truncated"}
+		fmt.Sprintf("section %s exceeds file: off=%#x size=%#x", sectionLabel(kind), offset, size),
+		"re-extract the file from the device or build output; this section will be skipped"}
 }
 
 func DiagSectionBeyondFile(kind uint32, offset uint32) ParseDiagnostic {
 	return ParseDiagnostic{SeverityWarning, CatSection, WarnSectionBeyondFile,
-		fmt.Sprintf("section kind %d starts beyond file: off=%#x", kind, offset),
-		"section offset points outside the file; header table may be corrupted"}
+		fmt.Sprintf("section %s starts beyond file: off=%#x", sectionLabel(kind), offset),
+		"section header table may be corrupted; re-extract from device or verify with a hex editor"}
 }
 
 func DiagSectionZeroSize(kind uint32) ParseDiagnostic {
@@ -181,14 +182,154 @@ func DiagSectionZeroSize(kind uint32) ParseDiagnostic {
 
 func DiagSectionOverlap(kindA, kindB uint32) ParseDiagnostic {
 	return ParseDiagnostic{SeverityWarning, CatSection, WarnSectionOverlap,
-		fmt.Sprintf("section kind %d overlaps section kind %d", kindA, kindB),
-		"overlapping sections indicate a corrupted section header table"}
+		fmt.Sprintf("section %s overlaps section %s", sectionLabel(kindA), sectionLabel(kindB)),
+		"section header table is corrupted; re-extract from device — overlapping data will produce incorrect results"}
 }
 
 func DiagSectionDuplicate(kind uint32) ParseDiagnostic {
 	return ParseDiagnostic{SeverityWarning, CatSection, WarnSectionDuplicate,
 		fmt.Sprintf("duplicate section kind %d (only first occurrence used)", kind),
 		"non-standard VDEX; the second section of the same kind is ignored"}
+}
+
+// sectionLabel returns a human-readable section name for diagnostic messages.
+func sectionLabel(kind uint32) string {
+	if n, ok := SectionName[kind]; ok {
+		return n
+	}
+	return fmt.Sprintf("kind(%d)", kind)
+}
+
+// --- dex constructors ---
+
+func DiagDexTooShort(index int, available int) ParseDiagnostic {
+	return ParseDiagnostic{SeverityError, CatDex, ErrDexTooShort,
+		fmt.Sprintf("dex[%d]: header too short (%d bytes available, need 112)", index, available),
+		"the DEX section may be truncated; re-extract the VDEX from device"}
+}
+
+func DiagDexInvalidMagic(index int, got string) ParseDiagnostic {
+	return ParseDiagnostic{SeverityError, CatDex, ErrDexInvalidMagic,
+		fmt.Sprintf("dex[%d]: invalid magic %q", index, got),
+		"embedded data is not a valid DEX file; the VDEX may be corrupted"}
+}
+
+func DiagDexInvalidFileSize(index int, declared, available uint32) ParseDiagnostic {
+	return ParseDiagnostic{SeverityError, CatDex, ErrDexInvalidFileSize,
+		fmt.Sprintf("dex[%d]: declared file_size %d exceeds available %d", index, declared, available),
+		"DEX header file_size is inconsistent with the section; file may be partially overwritten"}
+}
+
+func DiagDexSectionRange() ParseDiagnostic {
+	return ParseDiagnostic{SeverityWarning, CatDex, WarnDexSectionRange,
+		"kDexFileSection offset/size out of file range",
+		"DEX section will be skipped; other sections may still parse correctly"}
+}
+
+func DiagDexTruncated(index int) ParseDiagnostic {
+	return ParseDiagnostic{SeverityWarning, CatDex, WarnDexTruncated,
+		fmt.Sprintf("dex[%d]: section ends before next dex boundary", index),
+		"remaining DEX files in this section cannot be parsed"}
+}
+
+func DiagDexFileSizeClamped(index int, declared, available uint32) ParseDiagnostic {
+	return ParseDiagnostic{SeverityWarning, CatDex, WarnDexFileSizeClamped,
+		fmt.Sprintf("dex[%d]: file_size %d clamped to available %d", index, declared, available),
+		"DEX header file_size exceeds section bounds; parsing continues with clamped size"}
+}
+
+func DiagDexStringsRange(index int) ParseDiagnostic {
+	return ParseDiagnostic{SeverityError, CatDex, ErrDexStringsRange,
+		fmt.Sprintf("dex[%d]: string_ids offset/size out of dex range", index),
+		"string table cannot be read; class names and verifier strings will be unavailable"}
+}
+
+func DiagDexTypeIdsRange(index int) ParseDiagnostic {
+	return ParseDiagnostic{SeverityError, CatDex, ErrDexTypeIdsRange,
+		fmt.Sprintf("dex[%d]: type_ids offset/size out of dex range", index),
+		"type table cannot be read; class descriptor resolution will fail"}
+}
+
+func DiagDexClassDefsRange(index int) ParseDiagnostic {
+	return ParseDiagnostic{SeverityError, CatDex, ErrDexClassDefsRange,
+		fmt.Sprintf("dex[%d]: class_defs offset/size out of dex range", index),
+		"class definitions cannot be read; class preview will be empty"}
+}
+
+// --- verifier constructors ---
+
+func DiagVerifierSectionRange() ParseDiagnostic {
+	return ParseDiagnostic{SeverityWarning, CatVerifier, WarnVerifierSectionRange,
+		"verifier-deps section offset/size out of file range",
+		"verifier section will be skipped; use `--format sections` to check raw offsets"}
+}
+
+func DiagVerifierIndexTruncated(dexIdx int) ParseDiagnostic {
+	return ParseDiagnostic{SeverityWarning, CatVerifier, WarnVerifierIndexTruncated,
+		fmt.Sprintf("verifier section index table truncated at dex %d", dexIdx),
+		"remaining dex verifier data cannot be parsed; file may be truncated"}
+}
+
+func DiagVerifierBlockOutside(dexIdx int, offset int) ParseDiagnostic {
+	return ParseDiagnostic{SeverityWarning, CatVerifier, WarnVerifierBlockOutside,
+		fmt.Sprintf("verifier block %d offset %#x outside section", dexIdx, offset),
+		"this dex verifier block will be skipped; section header may be corrupted"}
+}
+
+func DiagVerifierBlockTruncated(dexIdx int) ParseDiagnostic {
+	return ParseDiagnostic{SeverityWarning, CatVerifier, WarnVerifierBlockTruncated,
+		fmt.Sprintf("dex %d verifier block truncated", dexIdx),
+		"class offset table extends beyond section; class counts may be wrong"}
+}
+
+func DiagVerifierMalformedChain(dexIdx, classIdx int) ParseDiagnostic {
+	return ParseDiagnostic{SeverityWarning, CatVerifier, WarnVerifierMalformedChain,
+		fmt.Sprintf("dex %d class %d malformed class offset chain", dexIdx, classIdx),
+		"cannot find next verified class boundary; remaining classes in this dex skipped"}
+}
+
+func DiagVerifierMalformedBounds(dexIdx, classIdx int) ParseDiagnostic {
+	return ParseDiagnostic{SeverityWarning, CatVerifier, WarnVerifierMalformedBounds,
+		fmt.Sprintf("dex %d class %d malformed set bounds", dexIdx, classIdx),
+		"assignability set range is invalid; this class's pairs will be missing"}
+}
+
+func DiagVerifierInvalidLEB128(dexIdx, classIdx int, field string) ParseDiagnostic {
+	return ParseDiagnostic{SeverityWarning, CatVerifier, WarnVerifierInvalidLEB128,
+		fmt.Sprintf("dex %d class %d invalid %s leb128", dexIdx, classIdx, field),
+		"LEB128 decoding failed; remaining pairs for this class are skipped"}
+}
+
+func DiagVerifierExtrasTruncated(dexIdx int) ParseDiagnostic {
+	return ParseDiagnostic{SeverityWarning, CatVerifier, WarnVerifierExtrasTruncated,
+		fmt.Sprintf("dex %d verifier extra strings table truncated", dexIdx),
+		"extra string offsets extend beyond section; string resolution will fall back to IDs"}
+}
+
+func DiagVerifierExtraInvalid(dexIdx, strIdx int, offset int) ParseDiagnostic {
+	return ParseDiagnostic{SeverityWarning, CatVerifier, WarnVerifierExtraInvalid,
+		fmt.Sprintf("dex %d extra string %d offset %#x invalid", dexIdx, strIdx, offset),
+		"string offset points outside section; this string shown as placeholder"}
+}
+
+// --- type lookup constructors ---
+
+func DiagTypeLookupSectionRange() ParseDiagnostic {
+	return ParseDiagnostic{SeverityWarning, CatTypeLookup, WarnTypeLookupSectionRange,
+		"type-lookup section offset/size out of file range",
+		"type-lookup section will be skipped; use `--format sections` to check raw offsets"}
+}
+
+func DiagTypeLookupTruncated(dexIdx int) ParseDiagnostic {
+	return ParseDiagnostic{SeverityWarning, CatTypeLookup, WarnTypeLookupTruncated,
+		fmt.Sprintf("type-lookup section truncated before dex %d", dexIdx),
+		"remaining dex type-lookup tables cannot be parsed"}
+}
+
+func DiagTypeLookupDexExceeds(dexIdx int, size int) ParseDiagnostic {
+	return ParseDiagnostic{SeverityWarning, CatTypeLookup, WarnTypeLookupDexExceeds,
+		fmt.Sprintf("type-lookup dex %d size %d exceeds section", dexIdx, size),
+		"this dex's type-lookup table extends beyond section bounds; parsing stops here"}
 }
 
 // UnknownSectionName formats a name for an unrecognized section kind.

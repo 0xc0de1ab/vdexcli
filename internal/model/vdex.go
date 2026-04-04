@@ -130,9 +130,28 @@ type VdexReport struct {
 	Verifier           *VerifierReport     `json:"verifier_deps,omitempty"`
 	TypeLookup         *TypeLookupReport   `json:"type_lookup,omitempty"`
 	Coverage           *ByteCoverageReport `json:"byte_coverage,omitempty"`
+	Diagnostics        []ParseDiagnostic   `json:"diagnostics,omitempty"`
 	Warnings           []string            `json:"warnings"`
 	WarningsByCategory map[string][]string `json:"warnings_by_category,omitempty"`
 	Errors             []string            `json:"errors"`
+}
+
+// AddDiag appends a structured diagnostic and populates the legacy
+// Warnings/Errors string slices for backward compatibility.
+func (r *VdexReport) AddDiag(d ParseDiagnostic) {
+	r.Diagnostics = append(r.Diagnostics, d)
+	if d.Severity == SeverityError {
+		r.Errors = append(r.Errors, d.Message)
+	} else {
+		r.Warnings = append(r.Warnings, d.Message)
+	}
+}
+
+// AddDiags appends multiple diagnostics.
+func (r *VdexReport) AddDiags(ds []ParseDiagnostic) {
+	for _, d := range ds {
+		r.AddDiag(d)
+	}
 }
 
 type ExtractSummary struct {
