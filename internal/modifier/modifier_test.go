@@ -388,3 +388,164 @@ func TestMakeFailureReason_StatusFailed_WithSummaryError(t *testing.T) {
 	assert.Equal(t, "section too large", reason)
 }
 
+// --- ParseVerifierPatch edge cases ---
+
+func TestParseVerifierPatch_EmptyInput(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "empty.json")
+	require.NoError(t, os.WriteFile(tmp, []byte("   "), 0644))
+	_, _, err := ParseVerifierPatch(tmp)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "empty input")
+}
+
+func TestParseVerifierPatch_ExtraJSON(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "extra.json")
+	data := `{"dexes":[]} {"extra":true}`
+	require.NoError(t, os.WriteFile(tmp, []byte(data), 0644))
+	_, _, err := ParseVerifierPatch(tmp)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "extra json")
+}
+
+func TestParseVerifierPatch_BadMode(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "badmode.json")
+	data := `{"mode":"delete","dexes":[]}`
+	require.NoError(t, os.WriteFile(tmp, []byte(data), 0644))
+	_, _, err := ParseVerifierPatch(tmp)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported patch mode")
+}
+
+func TestParseVerifierPatch_UnknownField(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "unknown.json")
+	data := `{"dexes":[], "bogus_field": 123}`
+	require.NoError(t, os.WriteFile(tmp, []byte(data), 0644))
+	_, _, err := ParseVerifierPatch(tmp)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid verifier patch json")
+}
+
+func TestParseVerifierPatch_FileNotFound(t *testing.T) {
+	_, _, err := ParseVerifierPatch("/nonexistent/path/patch.json")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "read verifier patch")
+}
+
+// --- ValidateVerifierPatchIndices edge cases ---
+
+func TestValidateVerifierPatchIndices_NegativeDexIndex(t *testing.T) {
+	err := ValidateVerifierPatchIndices(model.VerifierPatchSpec{
+		Dexes: []model.VerifierPatchDex{{DexIndex: -1}},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid dex_index")
+}
+
+func TestValidateVerifierPatchIndices_DuplicateDexIndex(t *testing.T) {
+	err := ValidateVerifierPatchIndices(model.VerifierPatchSpec{
+		Dexes: []model.VerifierPatchDex{{DexIndex: 0}, {DexIndex: 0}},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicate patch dex_index")
+}
+
+func TestValidateVerifierPatchIndices_NegativeClassIndex(t *testing.T) {
+	err := ValidateVerifierPatchIndices(model.VerifierPatchSpec{
+		Dexes: []model.VerifierPatchDex{{DexIndex: 0, Classes: []model.VerifierPatchClass{{ClassIndex: -1}}}},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid class_index")
+}
+
+func TestValidateVerifierPatchIndices_DuplicateClassIndex(t *testing.T) {
+	err := ValidateVerifierPatchIndices(model.VerifierPatchSpec{
+		Dexes: []model.VerifierPatchDex{{DexIndex: 0, Classes: []model.VerifierPatchClass{
+			{ClassIndex: 0}, {ClassIndex: 0},
+		}}},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicate class_index")
+}
+
+// --- BuildVerifierSectionReplacement edge cases ---
+
+func TestBuildReplacement_NoDexOrChecksum(t *testing.T) {
+	_, _, err := BuildVerifierSectionReplacement(nil, nil, model.VerifierPatchSpec{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot infer dex count")
+}
+
+func TestBuildReplacement_PatchDexExceedsCount(t *testing.T) {
+	_, _, err := BuildVerifierSectionReplacement(
+		[]model.DexReport{{ClassDefs: 3}},
+		[]uint32{0xCAFE},
+		model.VerifierPatchSpec{Dexes: []model.VerifierPatchDex{{DexIndex: 5}}},
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeds dex count")
+}
+
+func TestBuildReplacement_DuplicatePatchDex(t *testing.T) {
+	_, _, err := BuildVerifierSectionReplacement(
+		[]model.DexReport{{ClassDefs: 3}},
+		[]uint32{0xCAFE},
+		model.VerifierPatchSpec{Dexes: []model.VerifierPatchDex{{DexIndex: 0}, {DexIndex: 0}}},
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicate")
+}
+
+func TestBuildReplacement_ChecksumOnlyNoDex(t *testing.T) {
+	// No dex reports but has checksums → infers dex count from checksums
+	payload, _, err := BuildVerifierSectionReplacement(
+		nil,
+		[]uint32{0xCAFE},
+		model.VerifierPatchSpec{},
+	)
+	require.NoError(t, err)
+	assert.NotEmpty(t, payload)
+}
+
+// --- DefaultBuilder.BuildMerge ---
+
+func TestDefaultBuilder_BuildMerge_NoDex(t *testing.T) {
+	b := DefaultBuilder{}
+	_, _, err := b.BuildMerge(nil, nil, model.VdexSection{}, nil, model.VerifierPatchSpec{})
+	require.Error(t, err)
+}
+
+// --- WriteOutputFileAtomic edge cases ---
+
+func TestWriteOutputFileAtomic_InvalidDir(t *testing.T) {
+	err := WriteOutputFileAtomic("/nonexistent/dir/output.vdex", []byte("data"))
+	require.Error(t, err)
+}
+
+// --- AppendModifyLog edge cases ---
+
+func TestAppendModifyLog_InvalidPath(t *testing.T) {
+	err := AppendModifyLog("/nonexistent/dir/log.jsonl", model.ModifySummary{}, nil, nil, "", "")
+	require.Error(t, err)
+}
+
+func TestAppendModifyLog_WithDiffs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "log.jsonl")
+	s := model.ModifySummary{
+		Status:          "ok",
+		ModifiedClasses: 2,
+		DexDiffs: []model.ModifyDexDiff{
+			{DexIndex: 0, ModifiedClasses: 2, ChangedClassIdxs: []int{0, 1}},
+			{DexIndex: 1, ModifiedClasses: 0},
+		},
+	}
+	err := AppendModifyLog(path, s, map[string]string{"mode": "replace"}, []string{"warn1"}, "", "")
+	require.NoError(t, err)
+
+	data, _ := os.ReadFile(path)
+	var entry model.ModifyLogEntry
+	require.NoError(t, json.Unmarshal(data, &entry))
+	assert.Equal(t, []int{0}, entry.ModifiedDexes)
+	assert.Equal(t, 2, entry.ModifiedClassCount)
+	assert.NotEmpty(t, entry.TopSamples)
+}
+

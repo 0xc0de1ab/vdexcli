@@ -301,6 +301,57 @@ func TestParseSection_FileSizeClamped(t *testing.T) {
 	assert.True(t, hasDiag, "should emit diagnostic for oversized dex file_size")
 }
 
+func TestParse_StringTableError(t *testing.T) {
+	// Valid header but string_ids points out of range → returns ctx + error
+	raw := buildMinDex(0)
+	binary.LittleEndian.PutUint32(raw[0x38:], 10)   // string_ids_size = 10
+	binary.LittleEndian.PutUint32(raw[0x3C:], 0xFF) // string_ids_off beyond file
+	ctx, used, err := Parse(raw, 0)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "string_ids")
+	assert.NotNil(t, ctx) // partial result returned
+	assert.Equal(t, 0x70, used)
+}
+
+func TestParse_ClassDefsTableError(t *testing.T) {
+	// Valid header, no strings, but class_defs_off points out of range
+	raw := buildMinDex(3) // 3 class defs
+	binary.LittleEndian.PutUint32(raw[0x64:], 0xFF) // class_defs_off beyond file
+	ctx, _, err := Parse(raw, 0)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "class_defs")
+	assert.NotNil(t, ctx)
+}
+
+func TestParseSection_CursorExceedsEnd(t *testing.T) {
+	// DEX with file_size that after Align4 pushes cursor > section end
+	// Section of 113 bytes (0x71) — DEX is 112 (0x70), leaving 1 byte gap
+	// After parsing dex (used=0x70), cursor=60+0x70=172, Align4=172, end=60+113=173
+	// cursor(172) < end(173) → tries to parse again with 1 byte → truncated
+	dex := buildMinDex(0)
+	raw := make([]byte, 200)
+	copy(raw[60:], dex)
+	s := model.VdexSection{Offset: 60, Size: 0x71} // 113 bytes, 1 extra
+	ctxs, diags := ParseSection(raw, s, 0) // expected=0 auto-detect
+	assert.Len(t, ctxs, 1) // first dex parsed
+	// Second iteration should hit truncation
+	hasTrunc := false
+	for _, d := range diags {
+		if d.Code == model.WarnDexTruncated {
+			hasTrunc = true
+		}
+	}
+	assert.True(t, hasTrunc)
+}
+
+func TestParseModifiedUtf8_OffsetOutOfRange(t *testing.T) {
+	// string_id points to negative-equivalent offset (0xFFFFFFFF as uint32 read)
+	raw := make([]byte, 12)
+	binary.LittleEndian.PutUint32(raw[0:], 0xFFFFFFFF) // huge offset
+	_, _, err := ParseStrings(raw, 1, 0)
+	require.Error(t, err)
+}
+
 func TestParseClassDefs_InvalidClassIdx(t *testing.T) {
 	// class_idx points beyond type_ids → should show <invalid>
 	strs := []string{"Ljava/lang/Object;"}
