@@ -16,29 +16,19 @@ Parses every byte of a VDEX v027 file — header, section table, checksums, embe
 ## Quick Start
 
 ```bash
+# 1. Install
 go install github.com/0xc0de1ab/vdexcli@latest
 
-# Inspect a VDEX file — full structure with byte coverage
+# 2. Parse — see every byte of a VDEX file
 vdexcli parse app.vdex
 
-# CI gate: one-line status check
-vdexcli parse --format summary app.vdex
-# → status=ok size=5608 version=027 sections=4 checksums=1 dexes=0 coverage=100.0%
-
-# Extract embedded DEX files
-vdexcli extract-dex app.vdex ./dex-output/
-
-# Compare two VDEX files after modification
+# 3. Act — extract DEX, compare builds, or patch verifier deps
+vdexcli extract-dex app.vdex ./out/
 vdexcli diff before.vdex after.vdex
-# → verifier_deps: (2 classes changed)
-# →   [dex 0] verified 246→244 (-2)  pairs 565→563 (-2)
-
-# Patch verifier deps and verify
-vdexcli modify --dry-run --verifier-json patch.json input.vdex output.vdex
-
-# Batch scan all VDEX files in a directory
-for f in *.vdex; do vdexcli parse --format summary "$f"; done
+vdexcli modify --verifier-json patch.json input.vdex output.vdex
 ```
+
+More examples: [CI pipelines](#pipeline-batch-scan-with-summary), [output formats](#example-output), [diagnostics](#diagnostics-with-actionable-hints).
 
 ### Use Cases
 
