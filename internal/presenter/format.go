@@ -6,6 +6,8 @@ import (
 	"io"
 	"strings"
 
+	"github.com/samber/lo"
+
 	"github.com/0xc0de1ab/vdexcli/internal/model"
 )
 
@@ -94,20 +96,13 @@ func WriteModifySummary(w io.Writer, s model.ModifySummary) {
 // WriteExtractSummary writes a one-line summary for extract results.
 func WriteExtractSummary(w io.Writer, s model.ExtractSummary) {
 	fmt.Fprintf(w, "status=%s file=%s dir=%s extracted=%d failed=%d warnings=%d errors=%d\n",
-		lo_ternary(len(s.Errors) > 0, "error", "ok"),
+		lo.Ternary(len(s.Errors) > 0, "error", "ok"),
 		s.File, s.ExtractDir, s.Extracted, s.Failed,
 		len(s.Warnings), len(s.Errors))
 }
 
-func lo_ternary(cond bool, a, b string) string {
-	if cond {
-		return a
-	}
-	return b
-}
-
-// ValidateFormat checks if a format string is supported.
 // WriteTable writes a formatted, aligned table of sections to w.
+// When color is enabled, fields are highlighted by semantic role.
 func WriteTable(w io.Writer, r *model.VdexReport) {
 	if r == nil {
 		return
@@ -211,6 +206,7 @@ func WriteTable(w io.Writer, r *model.VdexReport) {
 	}
 }
 
+// ValidateFormat checks if a format string is one of the supported output modes.
 func ValidateFormat(f string) error {
 	switch strings.ToLower(f) {
 	case "", "text", "json", "jsonl", "summary", "sections", "coverage", "table":

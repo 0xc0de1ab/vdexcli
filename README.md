@@ -400,8 +400,10 @@ go test -v ./...
 make test
 ```
 
-The test suite includes 98 tests across 4 packages:
-- **cmd**: 32 e2e subprocess tests (all commands, all formats, error cases) + 3 integration tests (166 real VDEX files)
+The test suite includes 148 tests across 5 packages:
+- **cmd**: 32 e2e subprocess tests (all commands, 7 formats, error cases) + 3 integration tests (166 real VDEX files)
+- **internal/binutil**: 18 unit tests (100% coverage — LEB128, alignment, encoding round-trips)
 - **internal/parser**: 51 unit tests (header, sections, verifier, typelookup, coverage, meanings, diagnostics)
+- **internal/modifier**: 30 unit tests (patch parsing, validation, builder, failure classification, atomic write)
 - **internal/extractor**: 9 unit tests (mock filesystem, interface verification)
 - Real VDEX integration tests against Android 16 (AOSP `android-16.0.0_r4`)
