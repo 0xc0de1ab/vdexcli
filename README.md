@@ -43,18 +43,23 @@ size: 204 bytes
 vdex magic="vdex" version="027" sections=4
 sections:
   kind=kChecksumSection (0) off=0x3c size=0x4
+    DEX file location checksum list (one uint32 per input dex)
   kind=kDexFileSection (1) off=0x40 size=0x70
+    Concatenated DEX file payload
   kind=kVerifierDepsSection (2) off=0xb0 size=0x1c
+    Verifier dependency section
   kind=kTypeLookupTableSection (3) off=0xcc size=0x0
+    Class descriptor lookup table section
 checksums: 1
   [0]=0xcafebabe
 dex files: 1
-  [0] off=0x40 size=0x70 magic="dex\n" ver="035" endian=little-endian file_size=112
-     sha1=00000000000000000000 checksum=0xcafebabe
-     strings=0 types=0 protos=0 fields=0 methods=0 class_defs=3
+  [0] off=0x40 size=0x70 magic="dex\n" ver="035" endian=little-endian file_size=112 header=112
+     sha1=0000000000000000000000000000000000000000 checksum=0xcafebabe
+     strings=0(@0x0) types=0(@0x0) protos=0(@0x0) fields=0(@0x0) methods=0(@0x0) class_defs=3(@0x0)
 verifier_deps: off=0xb0 size=0x1c
   [dex 0] verified=2 unverified=1 pairs=1 extra_strings=0
     class 0: string_5(5) -> string_10(10)
+type_lookup: off=0xcc size=0x0
 byte_coverage: 204/204 bytes (100.0%)
   0x00000000..0x0000000c      12 bytes  vdex_header
   0x0000000c..0x0000003c      48 bytes  section_headers
@@ -118,6 +123,7 @@ $ vdexcli modify --dry-run --verifier-json patch.json app.vdex out.vdex
 modify summary: mode=replace patch_dexes=1 patch_classes=3 patch_extra_strings=0
 modify diff: classes=3 modified=2 unchanged=1 change=66.67%
 modify changed dexes: [0]
+modify changed class samples: dex=0 classes=[0 2]
 modify status: ok
 verifier section size: old=28 new=24 delta=-4
 modify output: dry-run (no file written)
@@ -127,7 +133,7 @@ $ vdexcli modify --dry-run --format json --verifier-json patch.json app.vdex out
 {
   "status": "ok",
   "modified_classes": 2,
-  "class_change_percent": 66.67
+  "class_change_percent": 66.66666666666666
 }
 ```
 
@@ -156,6 +162,10 @@ verifier_deps: off=0xb0 size=28
   [dex 0] verified=2 unverified=1 pairs=1 extras=0
 
 coverage: 204/204 bytes (100.0%)
+
+warnings: 2
+  ! section kind 3 has zero size
+  ! type-lookup section truncated before dex 0
 ```
 
 When output is a terminal, fields are color-coded: green for verified, yellow for warnings, red for errors. Use `--color always` to force colors in pipes.
@@ -165,13 +175,13 @@ When output is a terminal, fields are color-coded: green for verified, yellow fo
 ```
 # Passes: no warnings match the pattern
 $ vdexcli parse --strict --strict-warn "checksum" --format summary app.vdex
-status=warn file=app.vdex ...
+status=warn file=app.vdex size=204 version=027 ... coverage=100.0% gaps=0
 $ echo $?
 0
 
 # Fails: all warnings matched (no --strict-warn filter = match all)
 $ vdexcli parse --strict --format summary app.vdex
-strict mode: 2 matching warning(s): [section kind 3 has zero size ...]
+strict mode: 2 matching warning(s): [section kind 3 has zero size type-lookup section truncated before dex 0]
 $ echo $?
 1
 ```
@@ -356,25 +366,30 @@ See [`docs/vdex-format.md`](docs/vdex-format.md) for detailed field descriptions
 ```
 vdexcli/
 ├── main.go                          # Entry point (7 lines)
+├── Makefile                         # Build targets (all/build/test/lint/clean)
 ├── cmd/                             # Cobra command layer
-│   ├── root.go                      # Root command + global flags
-│   ├── parse.go                     # parse subcommand
+│   ├── root.go                      # Root command + global flags + --color
+│   ├── parse.go                     # parse subcommand + extract flags
 │   ├── extract.go                   # extract-dex subcommand
-│   ├── modify.go                    # modify subcommand
+│   ├── modify.go                    # modify subcommand (11-step pipeline)
 │   ├── dump.go                      # dump subcommand
 │   └── version.go                   # version subcommand
 ├── internal/
 │   ├── binutil/                     # Low-level binary I/O (ReadU32, LEB128, ...)
-│   ├── model/                       # Shared types, constants, diagnostics
-│   ├── dex/                         # DEX format parsing (independent of VDEX)
-│   ├── parser/                      # VDEX container parsing
+│   ├── model/                       # Shared types, constants, diagnostics (5 files)
+│   ├── dex/                         # DEX format parsing (4 files, VDEX-independent)
+│   ├── parser/                      # VDEX container parsing (7 files)
 │   ├── modifier/                    # Verifier section build/patch/compare
-│   ├── extractor/                   # DEX file extraction
-│   └── presenter/                   # Text/JSON output, warning categorization
+│   ├── extractor/                   # DEX file extraction (interface-driven)
+│   └── presenter/                   # Output formatting + ANSI color (3 files)
+├── .github/workflows/               # CI, release, integration test workflows
 ├── samples/                         # Example verifier patch JSON files
 ├── scripts/                         # Log analysis utilities
 ├── testdata/                        # Real VDEX files for integration tests
-└── docs/                            # Format documentation
+├── docs/
+│   ├── architecture.md              # Package diagram, data flow, design decisions
+│   └── vdex-format.md              # VDEX v027 binary format reference
+└── ROADMAP.md                       # Phased expansion plan
 ```
 
 ## Testing

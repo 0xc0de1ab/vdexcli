@@ -117,12 +117,12 @@ func WriteTable(w io.Writer, r *model.VdexReport) {
 	fmt.Fprintln(w)
 
 	// Section table
-	fmt.Fprintf(w, "  %s  %-28s  %10s  %10s\n",
+	fmt.Fprintf(w, "  %-4s  %-28s  %10s  %10s\n",
 		c(dim, "KIND"), c(dim, "NAME"), c(dim, "OFFSET"), c(dim, "SIZE"))
-	fmt.Fprintf(w, "  %s  %s  %s  %s\n",
+	fmt.Fprintf(w, "  %-4s  %-28s  %10s  %10s\n",
 		c(dim, "----"), c(dim, "----------------------------"), c(dim, "----------"), c(dim, "----------"))
 	for _, s := range r.Sections {
-		sizeStr := fmt.Sprintf("%d", s.Size)
+		sizeStr := fmt.Sprintf("%#x", s.Size)
 		if s.Size == 0 {
 			sizeStr = c(dim, "0")
 		}
@@ -148,11 +148,13 @@ func WriteTable(w io.Writer, r *model.VdexReport) {
 			if len(sigPreview) > 20 {
 				sigPreview = sigPreview[:20] + "..."
 			}
-			fmt.Fprintf(w, "  [%d] %s off=%#x size=%d endian=%s sha1=%s\n",
-				d.Index, c(boldCyn, magic+d.Version), d.Offset, d.Size, d.Endian, c(dim, sigPreview))
-			fmt.Fprintf(w, "       strings=%d types=%d protos=%d fields=%d methods=%d %s=%d\n",
+			fmt.Fprintf(w, "  [%d] %s  off=%#x  size=%d  endian=%s\n",
+				d.Index, c(boldCyn, magic+d.Version), d.Offset, d.Size, d.Endian)
+			fmt.Fprintf(w, "      sha1=%s  checksum=%s\n",
+				c(dim, sigPreview), c(cyan, fmt.Sprintf("%#x", d.ChecksumId)))
+			fmt.Fprintf(w, "      strings=%d types=%d protos=%d fields=%d methods=%d %s=%d\n",
 				d.StringIds, d.TypeIds, d.ProtoIds, d.FieldIds, d.MethodIds,
-				c(bold, "class_defs"), d.ClassDefs)
+				c(bold, "classes"), d.ClassDefs)
 		}
 		fmt.Fprintln(w)
 	}
@@ -186,7 +188,7 @@ func WriteTable(w io.Writer, r *model.VdexReport) {
 		fmt.Fprintf(w, "%s %d/%d bytes (%s)\n", c(bold, "coverage:"), cov.ParsedBytes, cov.FileSize, pctStr)
 		if len(cov.Gaps) > 0 {
 			for _, g := range cov.Gaps {
-				fmt.Fprintf(w, "  %s %#x..%#x (%d bytes)\n", c(yellow, "gap"), g.Offset, g.Offset+g.Size, g.Size)
+				fmt.Fprintf(w, "  %s %#x..%#x  %d bytes  %s\n", c(yellow, "gap"), g.Offset, g.Offset+g.Size, g.Size, c(dim, g.Label))
 			}
 		}
 		fmt.Fprintln(w)
