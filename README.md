@@ -242,7 +242,7 @@ $ echo $?
 
 ### Diagnostics with actionable hints
 
-Every warning and error includes a diagnostic code and a hint explaining what went wrong and what to do next.
+Every warning and error includes a diagnostic code and a hint explaining what went wrong and what to do next. Warnings use `!` (yellow), hints use `~` (dim).
 
 **Text output:**
 
@@ -250,14 +250,14 @@ Every warning and error includes a diagnostic code and a hint explaining what we
 $ vdexcli parse old-android10.vdex
 
 section warnings (1):
-  - section kDexFileSection has zero size
-    hint: this section is empty; normal for DM-format VDEX (no embedded DEX)
+  ! section kDexFileSection has zero size
+    ~ this section is empty; normal for DM-format VDEX (no embedded DEX)
 verifier warnings (1):
-  - dex 0: inferred class_def_count=246 from verifier section (DM format)
-    hint: no embedded DEX; class count inferred from offset table heuristic — verify against source APK
+  ! dex 0: inferred class_def_count=246 from verifier section (DM format)
+    ~ no embedded DEX; class count inferred from offset table heuristic — verify against source APK
 ```
 
-**JSON output** — each diagnostic has `code`, `message`, `hint`:
+**JSON output** — each diagnostic has `severity`, `code`, `message`, `hint`:
 
 ```
 $ vdexcli parse --json old-android10.vdex | jq '.diagnostics[0]'
@@ -270,14 +270,17 @@ $ vdexcli parse --json old-android10.vdex | jq '.diagnostics[0]'
 }
 ```
 
-34 diagnostic codes cover every parser failure mode — truncated files, invalid magic, corrupted sections, broken LEB128, and more. Each code maps to an actionable hint so you know whether to re-extract, check your input, or safely ignore.
+Severity values: `0` = error (fatal), `1` = warning (parsing continues). Codes prefixed `ERR_` are errors, `WARN_` are warnings.
+
+34 diagnostic codes cover every parser failure mode — truncated files, invalid magic, corrupted sections, broken LEB128, and more. Each code maps to an actionable hint so you know whether to re-extract, check your input, or safely ignore. See [`internal/model/errors.go`](internal/model/errors.go) for the full code list.
 
 ### Error handling
 
 ```
 $ vdexcli parse broken.vdex
-parse error: file too small for VDEX header: 11 bytes (need >= 12)
-    hint: verify the file is a complete VDEX and not truncated during copy
+errors (1):
+  ! file too small for VDEX header: 11 bytes (need >= 12)
+    ~ verify the file is a complete VDEX and not truncated during copy
 
 $ vdexcli parse nonexistent.vdex
 open nonexistent.vdex: no such file or directory
