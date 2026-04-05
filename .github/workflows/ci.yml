@@ -44,8 +44,8 @@ jobs:
           go test -coverprofile=coverage.out ./internal/binutil/ ./internal/parser/ ./internal/modifier/ ./internal/extractor/ ./internal/model/ ./internal/presenter/
           total=$(go tool cover -func=coverage.out | tail -1 | awk '{print $3}' | tr -d '%')
           echo "Total coverage: ${total}%"
-          if [ "$(echo "$total < 80" | bc)" -eq 1 ]; then
-            echo "::error::Coverage ${total}% is below minimum 80%"
+          if [ "$(echo "$total < 85" | bc)" -eq 1 ]; then
+            echo "::error::Coverage ${total}% is below minimum 85%"
             exit 1
           fi
       - name: Upload coverage
