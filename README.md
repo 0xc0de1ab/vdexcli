@@ -1,5 +1,9 @@
 # vdexcli
 
+[![CI](https://github.com/0xc0de1ab/vdexcli/actions/workflows/ci.yml/badge.svg)](https://github.com/0xc0de1ab/vdexcli/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/0xc0de1ab/vdexcli)](https://github.com/0xc0de1ab/vdexcli/releases/latest)
+[![Go Report Card](https://goreportcard.com/badge/github.com/0xc0de1ab/vdexcli)](https://goreportcard.com/report/github.com/0xc0de1ab/vdexcli)
+
 See every byte of an Android VDEX file. Parse, extract, diff, and patch — from the command line.
 
 ```bash
