@@ -42,6 +42,15 @@ fmt:
 vet:
 	go vet ./...
 
+cross-build:
+	@for os in linux darwin windows; do \
+		for arch in amd64 arm64; do \
+			if [ "$$os" = "windows" ] && [ "$$arch" = "arm64" ]; then continue; fi; \
+			GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 go build -o /dev/null . && \
+				echo "  $$os/$$arch OK" || echo "  $$os/$$arch FAIL"; \
+		done; \
+	done
+
 clean:
 	rm -rf build/
 	rm -f $(BIN)
