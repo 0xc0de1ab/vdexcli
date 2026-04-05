@@ -10,6 +10,17 @@ const (
 	SeverityWarning                 // Parsing continues; data may be incomplete.
 )
 
+func (s Severity) MarshalJSON() ([]byte, error) {
+	return []byte(`"` + s.String() + `"`), nil
+}
+
+func (s Severity) String() string {
+	if s == SeverityError {
+		return "error"
+	}
+	return "warning"
+}
+
 // Category groups related diagnostics for filtering (--strict-warn).
 type Category string
 

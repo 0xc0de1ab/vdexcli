@@ -1,6 +1,7 @@
 package model
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -173,6 +174,29 @@ func TestError_WithoutHint(t *testing.T) {
 func TestSeverityString(t *testing.T) {
 	assert.Equal(t, "error", ParseDiagnostic{Severity: SeverityError}.SeverityString())
 	assert.Equal(t, "warning", ParseDiagnostic{Severity: SeverityWarning}.SeverityString())
+	assert.Equal(t, "error", SeverityError.String())
+	assert.Equal(t, "warning", SeverityWarning.String())
+}
+
+func TestSeverityMarshalJSON(t *testing.T) {
+	b, err := SeverityError.MarshalJSON()
+	require.NoError(t, err)
+	assert.Equal(t, `"error"`, string(b))
+
+	b, err = SeverityWarning.MarshalJSON()
+	require.NoError(t, err)
+	assert.Equal(t, `"warning"`, string(b))
+}
+
+func TestSeverityInJSON_DiagnosticOutput(t *testing.T) {
+	d := DiagFileTooSmall(5)
+	r := &VdexReport{}
+	r.AddDiag(d)
+
+	data, err := json.Marshal(r)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"severity":"error"`)
+	assert.NotContains(t, string(data), `"severity":0`)
 }
 
 func TestUnknownSectionName(t *testing.T) {

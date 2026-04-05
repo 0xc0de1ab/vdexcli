@@ -263,7 +263,7 @@ verifier warnings (1):
 ```
 $ vdexcli parse --json old-android10.vdex | jq '.diagnostics[0]'
 {
-  "severity": 1,
+  "severity": "warning",
   "category": "section",
   "code": "WARN_SECTION_ZERO_SIZE",
   "message": "section kDexFileSection has zero size",
@@ -271,7 +271,7 @@ $ vdexcli parse --json old-android10.vdex | jq '.diagnostics[0]'
 }
 ```
 
-Severity values: `0` = error (fatal), `1` = warning (parsing continues). Codes prefixed `ERR_` are errors, `WARN_` are warnings.
+Severity values: `"error"` (fatal) or `"warning"` (parsing continues). Codes prefixed `ERR_` are errors, `WARN_` are warnings.
 
 34 diagnostic codes cover every parser failure mode — truncated files, invalid magic, corrupted sections, broken LEB128, and more. Each code maps to an actionable hint so you know whether to re-extract, check your input, or safely ignore. See [`internal/model/errors.go`](internal/model/errors.go) for the full code list.
 
