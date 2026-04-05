@@ -12,7 +12,7 @@ var versionCmd = &cobra.Command{
 	Short: "Print vdexcli version",
 	Args:  cobra.NoArgs,
 	RunE: func(_ *cobra.Command, _ []string) error {
-		fmt.Printf("vdexcli version %s\n", model.CLIVersion)
+		fmt.Printf("vdexcli version %s (%s)\n", model.CLIVersion, model.GitCommit)
 		return nil
 	},
 }

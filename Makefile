@@ -1,6 +1,7 @@
 MODULE   := github.com/0xc0de1ab/vdexcli
 BIN      := vdexcli
 VERSION  := $(shell grep 'var CLIVersion' internal/model/constants.go | sed 's/.*"\(.*\)"/\1/')
+COMMIT   := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 
 GOOS     ?= $(shell go env GOOS)
 GOARCH   ?= $(shell go env GOARCH)
@@ -8,8 +9,8 @@ VARIANT  ?= release
 
 BUILD_DIR := build/$(GOOS)-$(GOARCH)/$(VARIANT)
 
-LDFLAGS_RELEASE := -s -w -X '$(MODULE)/internal/model.CLIVersion=$(VERSION)'
-LDFLAGS_DEBUG   := -X '$(MODULE)/internal/model.CLIVersion=$(VERSION)'
+LDFLAGS_RELEASE := -s -w -X '$(MODULE)/internal/model.CLIVersion=$(VERSION)' -X '$(MODULE)/internal/model.GitCommit=$(COMMIT)'
+LDFLAGS_DEBUG   := -X '$(MODULE)/internal/model.CLIVersion=$(VERSION)' -X '$(MODULE)/internal/model.GitCommit=$(COMMIT)'
 LDFLAGS         := $(if $(filter release,$(VARIANT)),$(LDFLAGS_RELEASE),$(LDFLAGS_DEBUG))
 
 GCFLAGS_DEBUG   := -N -l

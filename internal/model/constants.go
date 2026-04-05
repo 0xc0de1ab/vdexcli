@@ -2,8 +2,9 @@
 // all vdexcli packages. It has no internal dependencies.
 package model
 
-// CLIVersion is set at build time via -ldflags. Falls back to the default below.
+// CLIVersion and GitCommit are set at build time via -ldflags.
 var CLIVersion = "0.4.0"
+var GitCommit = "dev"
 
 const (
 	VdexCurrentVersion  = "027"
