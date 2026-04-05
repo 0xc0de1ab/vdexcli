@@ -43,6 +43,12 @@ func ParseVdex(path string, includeMeanings bool) (*model.VdexReport, []byte, er
 	if r.Header.Magic != "vdex" {
 		r.AddDiag(model.DiagInvalidMagic(r.Header.Magic))
 	}
+
+	// Auto-detect legacy format and delegate.
+	if IsLegacyVersion(r.Header.Version) {
+		return ParseVdexLegacy(path, includeMeanings)
+	}
+
 	if r.Header.Version != model.VdexCurrentVersion {
 		r.AddDiag(model.DiagVersionMismatch(model.VdexCurrentVersion, r.Header.Version))
 	}

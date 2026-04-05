@@ -8,6 +8,8 @@ var GitCommit = "dev"
 
 const (
 	VdexCurrentVersion  = "027"
+	VdexMinLegacyVersion = "021"
+	VdexMaxLegacyVersion = "026"
 	NotVerifiedMarker   = uint32(0xFFFFFFFF)
 	VdexSchemaVersion   = "1.0.0"
 	DefaultNameTemplate = "{base}_{index}_{checksum}.dex"
