@@ -73,64 +73,120 @@ func runModify(cmd *cobra.Command, args []string) error {
 		m.DryRun = true
 	}
 	m.Mode = strings.ToLower(strings.TrimSpace(m.Mode))
-
 	inPath, outPath := args[0], args[1]
 
-	report, raw, err := parser.ParseVdex(inPath, p.Meanings)
-	parseErr := err
-	if err != nil && report == nil {
+	// Step 1: Parse input VDEX.
+	report, raw, parseErr := parseInput(inPath, p.Meanings)
+	if report == nil {
+		return parseErr
+	}
+
+	// Step 2: Load and validate patch.
+	patch, err := loadPatch(m, report)
+	if err != nil {
 		return err
 	}
+
+	// Step 3: Build new verifier payload.
+	section, raw, newPayload, err := buildAndRelayout(report, raw, patch)
+	if err != nil {
+		return err
+	}
+
+	// Step 4: Compare old vs new.
+	diff, dexDiffs, compareErr := compareSections(report, raw, section, newPayload)
+
+	// Step 5: Build summary, apply strict, write output.
+	patchStats := countPatchStats(patch)
+	summary := buildModifySummary(inPath, outPath, patch, patchStats, report, section, newPayload, diff, dexDiffs, m, parseErr, compareErr)
+	strictMatched := applyStrictModify(cmd, report, &summary)
+	writeErr := writeOutput(raw, section, newPayload, outPath, &summary, m)
+
+	// Step 6: Classify failure.
+	failureReason, failureCategory := classifyFailure(summary, parseErr, compareErr, writeErr, strictMatched)
+	applyFailureToSummary(&summary, failureReason, failureCategory)
+
+	// Step 7: Append log.
+	if err := appendLog(m, p, summary, strictMatched, failureReason, failureCategory); err != nil {
+		return err
+	}
+
+	// Step 8: Render output.
+	return renderModifyOutput(cmd, summary, section, newPayload, failureCategory, failureReason, strictMatched, report, m, parseErr, compareErr, writeErr)
+}
+
+// parseInput reads and parses the VDEX file, recording parse errors.
+func parseInput(inPath string, meanings bool) (*model.VdexReport, []byte, error) {
+	report, raw, err := parser.ParseVdex(inPath, meanings)
+	if err != nil && report == nil {
+		return nil, nil, err
+	}
 	if report == nil {
-		return fmt.Errorf("no parse result for %s", inPath)
+		return nil, nil, fmt.Errorf("no parse result for %s", inPath)
 	}
 	if err != nil {
 		report.Errors = append(report.Errors, err.Error())
 	}
+	return report, raw, err
+}
 
+// loadPatch reads the patch file and resolves mode conflicts.
+func loadPatch(m ModifyOpts, report *model.VdexReport) (model.VerifierPatchSpec, error) {
 	patch, patchWarn, err := modifier.ParseVerifierPatch(m.VerifierJSON)
 	if err != nil {
-		return fmt.Errorf("load verifier patch %q: %w", m.VerifierJSON, err)
+		return patch, fmt.Errorf("load verifier patch %q: %w", m.VerifierJSON, err)
 	}
 	report.Warnings = append(report.Warnings, patchWarn...)
 
 	if patch.Mode == "" {
 		patch.Mode = m.Mode
 	} else if patch.Mode != m.Mode {
-		return fmt.Errorf("patch mode %q conflicts with --mode %q", patch.Mode, m.Mode)
+		return patch, fmt.Errorf("patch mode %q conflicts with --mode %q", patch.Mode, m.Mode)
 	}
+	return patch, nil
+}
 
-	patchStats := countPatchStats(patch)
+// buildAndRelayout builds the new payload and relayouts the file if needed.
+func buildAndRelayout(report *model.VdexReport, raw []byte, patch model.VerifierPatchSpec) (model.VdexSection, []byte, []byte, error) {
 	section, err := findVerifierSection(report, raw)
 	if err != nil {
-		return err
+		return section, raw, nil, err
 	}
 
 	newPayload, buildWarn, err := buildPayload(report, raw, section, patch)
 	report.Warnings = append(report.Warnings, buildWarn...)
 	if err != nil {
-		return err
+		return section, raw, nil, err
 	}
+
 	if len(newPayload) > int(section.Size) {
 		raw = modifier.RelayoutVdex(raw, report.Sections, model.SectionVerifierDeps, newPayload)
-		// Re-read section headers from relayouted file.
 		newSections, _, _ := parser.ParseSections(raw[12:12+report.Header.NumSections*12], report.Header.NumSections)
 		report.Sections = newSections
 		section, err = findVerifierSection(report, raw)
 		if err != nil {
-			return err
+			return section, raw, nil, err
 		}
 	}
+	return section, raw, newPayload, nil
+}
 
+// compareSections runs the diff between original and patched verifier data.
+func compareSections(report *model.VdexReport, raw []byte, section model.VdexSection, newPayload []byte) (model.VerifierSectionDiff, []model.ModifyDexDiff, error) {
 	diff, dexDiffs, diffWarn, compareErr := modifier.CompareVerifierSectionDiff(raw, section, report.Dexes, report.Checksums, newPayload)
 	report.Warnings = append(report.Warnings, diffWarn...)
+	return diff, dexDiffs, compareErr
+}
 
-	summary := buildModifySummary(inPath, outPath, patch, patchStats, report, section, newPayload, diff, dexDiffs, m, parseErr, compareErr)
-	strictMatched := applyStrictModify(cmd, report, &summary)
-	writeErr := writeOutput(raw, section, newPayload, outPath, &summary, m)
+// classifyFailure determines the failure reason and category.
+func classifyFailure(summary model.ModifySummary, parseErr, compareErr, writeErr error, strictMatched []string) (string, string) {
+	reason := modifier.MakeFailureReason(summary, parseErr, compareErr, writeErr, strictMatched)
+	category := modifier.MakeFailureCategory(summary, parseErr, compareErr, writeErr, strictMatched)
+	return reason, category
+}
 
-	failureReason := modifier.MakeFailureReason(summary, parseErr, compareErr, writeErr, strictMatched)
-	failureCategory := modifier.MakeFailureCategory(summary, parseErr, compareErr, writeErr, strictMatched)
+// applyFailureToSummary records failure info into the summary.
+func applyFailureToSummary(summary *model.ModifySummary, failureReason, failureCategory string) {
 	summary.FailureCategory = failureCategory
 	if failureCategory != "" {
 		summary.FailureCategoryCounts[failureCategory]++
@@ -138,20 +194,27 @@ func runModify(cmd *cobra.Command, args []string) error {
 	if failureReason != "" && !lo.Contains(summary.Errors, failureReason) {
 		summary.Errors = append(summary.Errors, failureReason)
 	}
+}
 
-	if m.LogFile != "" {
-		logArgs := map[string]string{
-			"verifier_json": m.VerifierJSON, "mode": m.Mode,
-			"dry_run": fmt.Sprintf("%v", m.DryRun), "quiet": fmt.Sprintf("%v", m.Quiet),
-			"force": fmt.Sprintf("%v", m.Force), "strict": fmt.Sprintf("%v", p.Strict),
-			"strict_warn": p.StrictWarn, "verify": fmt.Sprintf("%v", m.Verify),
-			"log_file": m.LogFile,
-		}
-		if err := modifier.AppendModifyLog(m.LogFile, summary, logArgs, strictMatched, failureReason, failureCategory); err != nil {
-			return err
-		}
+// appendLog writes the NDJSON log entry if configured.
+func appendLog(m ModifyOpts, p ParseOpts, summary model.ModifySummary, strictMatched []string, failureReason, failureCategory string) error {
+	if m.LogFile == "" {
+		return nil
 	}
+	logArgs := map[string]string{
+		"verifier_json": m.VerifierJSON, "mode": m.Mode,
+		"dry_run": fmt.Sprintf("%v", m.DryRun), "quiet": fmt.Sprintf("%v", m.Quiet),
+		"force": fmt.Sprintf("%v", m.Force), "strict": fmt.Sprintf("%v", p.Strict),
+		"strict_warn": p.StrictWarn, "verify": fmt.Sprintf("%v", m.Verify),
+		"log_file": m.LogFile,
+	}
+	return modifier.AppendModifyLog(m.LogFile, summary, logArgs, strictMatched, failureReason, failureCategory)
+}
 
+// renderModifyOutput writes the result in the requested format.
+func renderModifyOutput(cmd *cobra.Command, summary model.ModifySummary, section model.VdexSection, newPayload []byte,
+	failureCategory, failureReason string, strictMatched []string, report *model.VdexReport,
+	m ModifyOpts, parseErr, compareErr, writeErr error) error {
 	w := os.Stdout
 	switch resolvedFormat(cmd) {
 	case FormatJSON:
