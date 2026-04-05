@@ -556,3 +556,9 @@ The test suite includes 148 tests across 5 packages:
 - **internal/modifier**: 30 unit tests (patch parsing, validation, builder, failure classification, atomic write)
 - **internal/extractor**: 9 unit tests (mock filesystem, interface verification)
 - Real VDEX integration tests against Android 16 (AOSP `android-16.0.0_r4`)
+
+## Contributing
+
+- [Bug reports](https://github.com/0xc0de1ab/vdexcli/issues/new?template=bug_report.md)
+- [Feature requests](https://github.com/0xc0de1ab/vdexcli/issues/new?template=feature_request.md)
+- [Discussions](https://github.com/0xc0de1ab/vdexcli/discussions)
