@@ -3,6 +3,9 @@ name: Integration Tests
 on:
   push:
     branches: [main]
+    paths-ignore: ['*.md', 'docs/**', 'LICENSE']
+  schedule:
+    - cron: '0 0 * * 1'  # weekly Monday midnight UTC
   workflow_dispatch:
 
 permissions:
