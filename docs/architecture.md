@@ -267,6 +267,38 @@ sequenceDiagram
 | coverage | `WriteCoverage()` | 바이트 커버리지 전용 |
 | table | `WriteTable()` | 정렬 테이블 + ANSI 색상 (터미널용) |
 
+## CI/CD 파이프라인
+
+```mermaid
+graph LR
+    subgraph "ci.yml (push/PR)"
+        A[lint] --> |pass| B[vet + mod verify]
+        B --> C[vulncheck]
+        C --> D[fmt-check]
+        D --> E[test + coverage]
+        E --> F["build (5 platforms)"]
+        F --> G[smoke test]
+    end
+
+    subgraph "release.yml (v* tag)"
+        H[test] --> I["build matrix<br/>linux/darwin/windows<br/>amd64/arm64"]
+        I --> J[package tar.gz/zip]
+        J --> K[GitHub Release<br/>+ auto release notes]
+    end
+
+    subgraph "test-integration.yml"
+        L["166 real VDEX files<br/>(Android 16)"]
+    end
+```
+
+**트리거 규칙:**
+
+| 워크플로우 | 트리거 | 권한 | concurrency |
+|-----------|--------|------|-------------|
+| ci.yml | push main, PR | read | cancel-in-progress |
+| release.yml | tag `v*` | write | no cancel |
+| test-integration.yml | manual/schedule | read | — |
+
 `--color auto|always|never` 플래그로 색상을 제어한다. `auto`(기본)는 `golang.org/x/term`으로 터미널을 감지한다.
 
 ## 진단 체계
