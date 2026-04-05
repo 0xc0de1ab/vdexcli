@@ -112,7 +112,14 @@ func runModify(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if len(newPayload) > int(section.Size) {
-		return fmt.Errorf("verifier payload too large: %d bytes > section size %d", len(newPayload), section.Size)
+		raw = modifier.RelayoutVdex(raw, report.Sections, model.SectionVerifierDeps, newPayload)
+		// Re-read section headers from relayouted file.
+		newSections, _, _ := parser.ParseSections(raw[12:12+report.Header.NumSections*12], report.Header.NumSections)
+		report.Sections = newSections
+		section, err = findVerifierSection(report, raw)
+		if err != nil {
+			return err
+		}
 	}
 
 	diff, dexDiffs, diffWarn, compareErr := modifier.CompareVerifierSectionDiff(raw, section, report.Dexes, report.Checksums, newPayload)
