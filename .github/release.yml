@@ -2,6 +2,8 @@ changelog:
   categories:
     - title: Breaking Changes
       labels: [breaking]
+    - title: Deprecations
+      labels: [deprecated]
     - title: Features
       labels: [enhancement]
     - title: Bug Fixes
