@@ -6,6 +6,10 @@ changelog:
       labels: [enhancement]
     - title: Bug Fixes
       labels: [bug]
+    - title: Performance
+      labels: [performance]
+    - title: Documentation
+      labels: [documentation]
     - title: Dependencies
       labels: [dependencies]
     - title: Other
