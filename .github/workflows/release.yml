@@ -79,6 +79,7 @@ jobs:
         with:
           name: vdexcli-${{ matrix.goos }}-${{ matrix.goarch }}
           path: build/${{ matrix.goos }}-${{ matrix.goarch }}/release/vdexcli-*
+          retention-days: 90
 
   publish:
     needs: release
