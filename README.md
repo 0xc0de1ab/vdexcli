@@ -326,7 +326,13 @@ cd vdexcli
 make build          # release binary in build/<os>-<arch>/release/
 ```
 
-Available Make targets: `make all`, `make build`, `make test`, `make lint`, `make fmt`, `make vet`, `make clean`
+Available Make targets: `make all`, `make build`, `make test`, `make lint`, `make fmt`, `make vet`, `make clean`, `make cross-build`
+
+Or download a prebuilt binary from [GitHub Releases](https://github.com/0xc0de1ab/vdexcli/releases/latest) and verify the checksum:
+
+```bash
+sha256sum -c vdexcli-checksums.txt
+```
 
 Debug build: `make build VARIANT=debug`
 
