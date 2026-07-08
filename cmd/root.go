@@ -125,7 +125,7 @@ func init() {
 		String("log-file", "", "append result as NDJSON to file")
 	modifyBinder.SetTo(modifyCmd.Flags())
 
-	rootCmd.AddCommand(parseCmd, extractDexCmd, modifyCmd, dumpCmd, versionCmd)
+	rootCmd.AddCommand(parseCmd, extractDexCmd, modifyCmd, dumpCmd, versionCmd, explainCmd)
 }
 
 // getGlobalOpts reads global flags from the command's inherited flag set.

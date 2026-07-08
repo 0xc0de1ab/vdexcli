@@ -436,3 +436,49 @@ func TestE2E_Diff_ExitCode_Different(t *testing.T) {
 	_, _, code := runCLI(t, "diff", testVdexPath, testModifiedVdexPath)
 	assert.Equal(t, 1, code, "different files should exit 1")
 }
+
+// --- explain ---
+
+func TestE2E_Explain_Text(t *testing.T) {
+	out, _, code := runCLI(t, "explain", testVdexPath)
+	assert.Equal(t, 0, code)
+	assert.Contains(t, out, "[Offset]")
+	assert.Contains(t, out, "vdex.header.magic")
+	assert.Contains(t, out, "magic")
+	assert.Contains(t, out, "vdex.header.version")
+}
+
+func TestE2E_Explain_JSON(t *testing.T) {
+	out, _, code := runCLI(t, "explain", "--format", "json", testVdexPath)
+	assert.Equal(t, 0, code)
+	var data map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &data))
+	assert.NotNil(t, data["fields"])
+	fields := data["fields"].([]any)
+	assert.NotEmpty(t, fields)
+	firstField := fields[0].(map[string]any)
+	assert.Equal(t, "vdex.header.magic", firstField["logical_path"])
+}
+
+func TestE2E_Explain_Offset(t *testing.T) {
+	out, _, code := runCLI(t, "explain", "--offset", "0x0", testVdexPath)
+	assert.Equal(t, 0, code)
+	assert.Contains(t, out, "Field Details at Offset 0x00000000:")
+	assert.Contains(t, out, "Logical Path:")
+	assert.Contains(t, out, "vdex.header.magic")
+}
+
+func TestE2E_Explain_Offset_JSON(t *testing.T) {
+	out, _, code := runCLI(t, "explain", "--offset", "4", "--format", "json", testVdexPath)
+	assert.Equal(t, 0, code)
+	var data map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &data))
+	assert.Equal(t, "vdex.header.version", data["logical_path"])
+	assert.Equal(t, float64(4), data["offset"])
+}
+
+func TestE2E_Explain_Offset_NotFound(t *testing.T) {
+	out, _, code := runCLI(t, "explain", "--offset", "999999", testVdexPath)
+	assert.Equal(t, 0, code)
+	assert.Contains(t, out, "No field found containing offset 0xf423f")
+}
