@@ -8,20 +8,45 @@ import (
 	"github.com/0xc0de1ab/vdexcli/internal/model"
 )
 
+// ValidateExplainFormat validates that f is a format supported by WriteExplain.
+// Only "text" (default) and "json" are supported.
+func ValidateExplainFormat(f string) error {
+	switch strings.ToLower(f) {
+	case "", "text", "json":
+		return nil
+	default:
+		return fmt.Errorf("explain: unsupported --format %q; supported: text, json", f)
+	}
+}
+
 // WriteExplain writes the PrimitiveMap to w, optionally filtering by offset.
 func WriteExplain(w io.Writer, pm *model.PrimitiveMap, format string, offsetFilter *uint32) error {
+	if pm == nil {
+		return fmt.Errorf("explain: nil PrimitiveMap")
+	}
 	format = strings.ToLower(format)
 
 	// 1. If offset filter is provided, find the specific field
 	if offsetFilter != nil {
-		field := FindFieldAtOffset(pm, *offsetFilter)
+		field := pm.FieldAtOffset(*offsetFilter)
 		if field == nil {
 			if format == "json" {
-				_, err := io.WriteString(w, "{}\n")
-				return err
+				type notFound struct {
+					Found  bool   `json:"found"`
+					Offset uint32 `json:"offset"`
+					Error  string `json:"error"`
+				}
+				return WriteJSON(w, notFound{
+					Found:  false,
+					Offset: *offsetFilter,
+					Error:  fmt.Sprintf("no field covers offset 0x%x", *offsetFilter),
+				})
 			}
 			_, err := fmt.Fprintf(w, "No field found containing offset 0x%x (%d)\n", *offsetFilter, *offsetFilter)
-			return err
+			if err != nil {
+				return err
+			}
+			return fmt.Errorf("no field covers offset 0x%x", *offsetFilter)
 		}
 
 		if format == "json" {
@@ -39,16 +64,6 @@ func WriteExplain(w io.Writer, pm *model.PrimitiveMap, format string, offsetFilt
 
 	// Default: Text format table
 	return printExplainTable(w, pm)
-}
-
-// FindFieldAtOffset locates the PrimitiveField that covers the given offset.
-func FindFieldAtOffset(pm *model.PrimitiveMap, offset uint32) *model.PrimitiveField {
-	for _, f := range pm.Fields {
-		if offset >= f.Offset && offset < f.Offset+f.Size {
-			return f
-		}
-	}
-	return nil
 }
 
 func printDetailedField(w io.Writer, f *model.PrimitiveField) error {
@@ -117,10 +132,10 @@ func printExplainTable(w io.Writer, pm *model.PrimitiveMap) error {
 
 		// For Offset, it is colored. Its uncolored length is 10. We print colored offset and 2 spaces.
 		offsetPart := fmt.Sprintf("%s  ", offsetStr)
-		
+
 		// For Hex Dump, we pad the uncolored string to 23 chars, then add 2 spaces.
 		hexPart := fmt.Sprintf("%-23s  ", hexDump)
-		
+
 		// For Primitive, we pad the uncolored type string to 13 chars, then color it, then add 2 spaces.
 		primPart := fmt.Sprintf("%s  ", c(colorForType(f.Type), fmt.Sprintf("%-13s", primType)))
 
@@ -130,6 +145,42 @@ func printExplainTable(w io.Writer, pm *model.PrimitiveMap) error {
 			return err
 		}
 	}
+
+	// Coverage summary footer
+	if pm.TotalBytes > 0 {
+		covered := pm.TotalBytes
+		for _, gap := range pm.UnmappedGaps {
+			if gap.End > gap.Start {
+				covered -= gap.End - gap.Start
+			}
+		}
+		pct := float64(covered) / float64(pm.TotalBytes) * 100.0
+		if len(pm.UnmappedGaps) == 0 {
+			summaryLine := fmt.Sprintf("Coverage: %d/%d bytes (%.1f%%) — all bytes explained", covered, pm.TotalBytes, pct)
+			_, err = fmt.Fprintln(w, c(boldGrn, summaryLine))
+		} else {
+			summaryLine := fmt.Sprintf("Coverage: %d/%d bytes (%.1f%%)", covered, pm.TotalBytes, pct)
+			_, err = fmt.Fprintln(w, c(boldYlw, summaryLine))
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintln(w, c(yellow, fmt.Sprintf("Unmapped gaps (%d):", len(pm.UnmappedGaps))))
+			if err != nil {
+				return err
+			}
+			for _, gap := range pm.UnmappedGaps {
+				size := gap.End - gap.Start
+				_, err = fmt.Fprintf(w, "  0x%08x..0x%08x   %d bytes\n", gap.Start, gap.End, size)
+				if err != nil {
+					return err
+				}
+			}
+		}
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -139,6 +190,8 @@ func colorForType(t model.PrimitiveType) string {
 		return boldCyn
 	case model.TypeCString, model.TypeString:
 		return green
+	case model.TypeChar:
+		return boldGrn
 	case model.TypeUint8, model.TypeUint16LE, model.TypeUint32LE, model.TypeUint64LE:
 		return cyan
 	case model.TypeLeb128, model.TypeUleb128:
@@ -148,7 +201,7 @@ func colorForType(t model.PrimitiveType) string {
 	case model.TypeBytes:
 		return white
 	default:
-		return white
+		return boldRed
 	}
 }
 
@@ -208,7 +261,7 @@ func formatValue(f *model.PrimitiveField) string {
 				return fmt.Sprintf("%q (Android 9/10)", ver)
 			case "021":
 				return fmt.Sprintf("%q (Android 11)", ver)
-			case "027":
+			case model.VdexCurrentVersion:
 				return fmt.Sprintf("%q (Android 12+)", ver)
 			default:
 				return fmt.Sprintf("%q", ver)
@@ -281,6 +334,13 @@ func formatValue(f *model.PrimitiveField) string {
 		if val, ok := f.ParsedValue.(string); ok {
 			return fmt.Sprintf("%q", val)
 		}
+	case model.TypeChar:
+		if val, ok := f.ParsedValue.(uint8); ok {
+			if val >= 32 && val <= 126 {
+				return fmt.Sprintf("'%c' (0x%02x)", val, val)
+			}
+			return fmt.Sprintf("0x%02x", val)
+		}
 	case model.TypeUint8, model.TypeUint16LE, model.TypeUint32LE, model.TypeUint64LE, model.TypeLeb128, model.TypeUleb128:
 		if val, ok := convertToUint64(f.ParsedValue); ok {
 			return fmt.Sprintf("%d", val)
@@ -306,19 +366,13 @@ func formatValue(f *model.PrimitiveField) string {
 	return f.Summary
 }
 
+// sectionKindName returns the canonical section name from model.SectionName,
+// or a "kUnknownSection(N)" fallback for unrecognized kinds.
 func sectionKindName(kind uint32) string {
-	switch kind {
-	case 0:
-		return "kChecksumSection"
-	case 1:
-		return "kDexSection"
-	case 2:
-		return "kVerifierDepsSection"
-	case 3:
-		return "kTypeLookupTableSection"
-	default:
-		return "kUnknownSection"
+	if name, ok := model.SectionName[kind]; ok {
+		return name
 	}
+	return fmt.Sprintf("kUnknownSection(%d)", kind)
 }
 
 func convertToUint64(val any) (uint64, bool) {
@@ -350,7 +404,10 @@ func isPrintable(b []byte) bool {
 		return false
 	}
 	for _, c := range b {
-		if c < 32 || c > 126 {
+		if c < 32 && c != '\t' && c != '\n' && c != '\r' {
+			return false
+		}
+		if c > 126 {
 			return false
 		}
 	}

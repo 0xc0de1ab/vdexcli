@@ -24,6 +24,7 @@ go install github.com/0xc0de1ab/vdexcli@latest
 
 vdexcli parse app.vdex                    # full structural dump
 vdexcli parse --json app.vdex             # machine-readable JSON
+vdexcli explain app.vdex                  # byte-level field map (hex dump table)
 vdexcli extract-dex app.vdex ./out/       # pull embedded DEX files
 vdexcli diff before.vdex after.vdex       # compare two builds
 vdexcli modify --verifier-json patch.json in.vdex out.vdex  # patch verifier deps
@@ -32,6 +33,7 @@ vdexcli modify --verifier-json patch.json in.vdex out.vdex  # patch verifier dep
 ## Features
 
 - **Parse** — Headers, sections, checksums, DEX files, verifier deps, type lookup tables — with byte-level coverage
+- **Explain** — Byte-level primitive field map with hex dump, type, and value annotations; query any byte offset
 - **Extract** — Pull embedded DEX files for disassembly with jadx/baksmali
 - **Modify** — Patch verifier-deps section via JSON (replace or merge mode)
 - **Diff** — Structural comparison of two VDEX files (exit 0=identical, 1=different)
@@ -405,6 +407,28 @@ cat patch.json | vdexcli modify --verifier-json - --log-file modify.log in.vdex 
 
 Sample patches: [`samples/`](samples/)
 
+### explain
+
+```bash
+vdexcli explain app.vdex                        # text table (default)
+vdexcli explain --format json app.vdex          # JSON PrimitiveMap
+vdexcli explain --offset 0x3c app.vdex          # query field at byte offset 0x3c
+vdexcli explain --offset 60 app.vdex            # decimal offset also supported
+vdexcli explain --offset 0x3c --json app.vdex   # single-field JSON
+```
+
+Maps every byte of the VDEX to a named primitive field, showing offset, hex dump, type, and decoded value.
+
+**Key flags:**
+- `--offset <hex|dec>` — Query the field covering this byte offset (exit 1 if not found)
+- `--format text|json` — Output format (`text` table or `json` full PrimitiveMap)
+- `--json` — Shorthand for `--format json`
+
+**Output includes:**
+- Aligned hex-dump table with ANSI color coding per type
+- Coverage summary: `N/M bytes (P%) — all bytes explained` or gap details
+- `--offset` mode: full field detail view (offset, size, type, raw bytes, decoded value)
+
 ### dump
 
 ```bash
@@ -525,6 +549,7 @@ vdexcli/
 ├── cmd/                             # Cobra command layer
 │   ├── root.go                      # Root command + global flags + --color
 │   ├── parse.go                     # parse subcommand + extract flags
+│   ├── explain.go                   # explain subcommand (byte-level field map)
 │   ├── extract.go                   # extract-dex subcommand
 │   ├── modify.go                    # modify subcommand (11-step pipeline)
 │   ├── dump.go                      # dump subcommand
