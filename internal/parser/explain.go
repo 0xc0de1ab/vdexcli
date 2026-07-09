@@ -131,6 +131,7 @@ func (r *AnnotatedReader) ReadUint64LE(path string, summary string, desc string)
 func (r *AnnotatedReader) ReadUleb128(path string, summary string, desc string) (uint32, int) {
 	val, bytesRead, err := binutil.ReadULEB128(r.data, int(r.offset))
 	if err != nil {
+		// Do NOT advance r.offset on error; caller must check bytesRead==0 and break.
 		return 0, 0
 	}
 	r.fields = append(r.fields, &model.PrimitiveField{
@@ -147,16 +148,26 @@ func (r *AnnotatedReader) ReadUleb128(path string, summary string, desc string) 
 	return val, bytesRead
 }
 
-func (r *AnnotatedReader) ReadCString(path string, summary string, desc string) string {
+// ReadCStringBounded reads a null-terminated C string but restricts its search
+// to maxOffset, preventing it from crossing section boundaries (BUG-H2 fix).
+func (r *AnnotatedReader) ReadCStringBounded(maxOffset uint32, path string, summary string, desc string) string {
 	if r.offset >= uint32(len(r.data)) {
 		return ""
 	}
-	nullIdx := bytes.IndexByte(r.data[r.offset:], 0)
+	// Clamp maxOffset to the actual data length.
+	if maxOffset > uint32(len(r.data)) {
+		maxOffset = uint32(len(r.data))
+	}
+	if r.offset >= maxOffset {
+		return ""
+	}
+	// Search only within [r.offset, maxOffset) — never crosses section boundary.
+	nullIdx := bytes.IndexByte(r.data[r.offset:maxOffset], 0)
 	var size uint32
 	var val string
 	if nullIdx < 0 {
-		size = uint32(len(r.data)) - r.offset
-		val = string(r.data[r.offset:])
+		size = maxOffset - r.offset
+		val = string(r.data[r.offset:maxOffset])
 	} else {
 		size = uint32(nullIdx) + 1
 		val = string(r.data[r.offset : r.offset+uint32(nullIdx)])
@@ -239,15 +250,17 @@ func ExplainVdex(path string) (*model.PrimitiveMap, error) {
 		return nil, fmt.Errorf("invalid VDEX magic signature: %q", magic)
 	}
 
-	versionBytes := r.ReadBytes(4, "vdex.header.version", "VDEX version number", "The version of the VDEX format.")
-	versionStr := string(trimNulls(versionBytes))
+	// BUG-M1 fix: version field should be TypeMagic, not TypeBytes.
+	versionMagic := r.ReadMagic(4, "vdex.header.version", "VDEX version number", "The version of the VDEX format.")
+	versionStr := string(trimNulls([]byte(versionMagic)))
 
 	numSections := r.ReadUint32LE("vdex.header.sections", "Number of sections", "Total number of sections defined in the section table.")
 
 	// 2. Section Headers Table
-	headerEnd := 12 + numSections*12
-	if len(raw) < int(headerEnd) {
-		return nil, fmt.Errorf("file too small for section table (%d bytes, need %d)", len(raw), headerEnd)
+	// BUG-H3 fix: use uint64 arithmetic to prevent uint32 overflow when numSections is large.
+	headerEnd64 := uint64(12) + uint64(numSections)*12
+	if headerEnd64 > uint64(len(raw)) {
+		return nil, fmt.Errorf("file too small for section table (%d bytes, need %d)", len(raw), headerEnd64)
 	}
 
 	sectionMap := make(map[uint32]sectionInfo)
@@ -256,7 +269,10 @@ func ExplainVdex(path string) (*model.PrimitiveMap, error) {
 		offset := r.ReadUint32LE(fmt.Sprintf("vdex.sections[%d].offset", i), "Section offset", fmt.Sprintf("File offset where section %d starts.", i))
 		size := r.ReadUint32LE(fmt.Sprintf("vdex.sections[%d].size", i), "Section size", fmt.Sprintf("The size in bytes of section %d.", i))
 
-		sectionMap[kind] = sectionInfo{kind: kind, offset: offset, size: size}
+		// BUG-M6 fix: keep first occurrence; reference parser (ParseVdex) also uses the first.
+		if _, exists := sectionMap[kind]; !exists {
+			sectionMap[kind] = sectionInfo{kind: kind, offset: offset, size: size}
+		}
 	}
 
 	// 3. Checksums Section (kind 0)
@@ -271,6 +287,21 @@ func ExplainVdex(path string) (*model.PrimitiveMap, error) {
 				fmt.Sprintf("DEX[%d] checksum", i),
 				fmt.Sprintf("The location checksum for the DEX file at index %d.", i),
 			)
+		}
+		// BUG-M4 fix: emit TypePadding for remainder bytes when size % 4 != 0.
+		remainder := cs.size % 4
+		if remainder != 0 {
+			r.fields = append(r.fields, &model.PrimitiveField{
+				Offset:      r.offset,
+				Size:        remainder,
+				Type:        model.TypePadding,
+				RawBytes:    raw[r.offset : r.offset+remainder],
+				ParsedValue: nil,
+				LogicalPath: "vdex.checksums.padding",
+				Summary:     "Checksum section trailing padding",
+				Description: fmt.Sprintf("Trailing %d byte(s) of checksum section not aligned to 4 bytes.", remainder),
+			})
+			r.offset += remainder
 		}
 	}
 
@@ -292,9 +323,10 @@ func ExplainVdex(path string) (*model.PrimitiveMap, error) {
 
 			dexStart := cursor
 
-			// Parse DEX header fields
-			magic := r.ReadMagic(8, fmt.Sprintf("vdex.dex[%d].header.magic", dexIdx), "DEX magic signature", "Identifies the file as a DEX file.")
-			if !bytes.HasPrefix([]byte(magic), []byte("dex\n")) {
+			// BUG-M3 fix: parse DEX magic (4B) and version (4B) as separate TypeMagic fields.
+			dexMagicStr := r.ReadMagic(4, fmt.Sprintf("vdex.dex[%d].header.magic", dexIdx), "DEX magic signature", "Identifies the file as a DEX file (must be 'dex\\n').")
+			_ = r.ReadMagic(4, fmt.Sprintf("vdex.dex[%d].header.version", dexIdx), "DEX version", "DEX format version (e.g. '035\\x00').")
+			if !bytes.HasPrefix([]byte(dexMagicStr), []byte("dex\n")) {
 				break
 			}
 
@@ -424,16 +456,24 @@ func ExplainVdex(path string) (*model.PrimitiveMap, error) {
 				r.SetOffset(uint32(setStart))
 				pairIdx := 0
 				for r.Offset() < uint32(setEnd) {
-					r.ReadUleb128(
+					// BUG-C1 fix: break on malformed LEB128 (n==0 means offset won't
+					// advance, which causes an infinite loop on malformed input).
+					_, destN := r.ReadUleb128(
 						fmt.Sprintf("vdex.verifier.dex[%d].class[%d].pair[%d].dest", i, classIdx, pairIdx),
 						"Destination type index",
 						"The destination type index for assignability verification.",
 					)
-					r.ReadUleb128(
+					if destN == 0 {
+						break // malformed LEB128 — stop to avoid infinite loop
+					}
+					_, srcN := r.ReadUleb128(
 						fmt.Sprintf("vdex.verifier.dex[%d].class[%d].pair[%d].src", i, classIdx, pairIdx),
 						"Source type index",
 						"The source type index for assignability verification.",
 					)
+					if srcN == 0 {
+						break // malformed LEB128 — stop to avoid infinite loop
+					}
 					pairIdx++
 				}
 
@@ -470,7 +510,10 @@ func ExplainVdex(path string) (*model.PrimitiveMap, error) {
 					abs := sectionStart + int(rel)
 					if abs >= blockOff && abs < sectionEnd {
 						r.SetOffset(uint32(abs))
-						r.ReadCString(
+						// BUG-H2 fix: use ReadCStringBounded with sectionEnd to prevent
+						// crossing into the next section when the string is unterminated.
+						r.ReadCStringBounded(
+							uint32(sectionEnd),
 							fmt.Sprintf("vdex.verifier.dex[%d].extra_strings[%d]", i, s),
 							"Extra string",
 							"Extra string used by verifier dependencies.",
@@ -504,7 +547,8 @@ func ExplainVdex(path string) (*model.PrimitiveMap, error) {
 				"Size of the type lookup table in bytes.",
 			)
 
-			if r.Offset()+size > uint32(sectionEnd) {
+			// BUG-H4 fix: use uint64 arithmetic to prevent overflow when size is very large.
+			if uint64(r.Offset())+uint64(size) > uint64(sectionEnd) {
 				remaining := uint32(sectionEnd) - r.Offset()
 				if remaining > 0 {
 					r.ReadBytes(int(remaining), fmt.Sprintf("vdex.typelookup.dex[%d].truncated_payload", i), "Truncated table payload", "Truncated lookup table entries.")
@@ -565,6 +609,11 @@ func ExplainVdex(path string) (*model.PrimitiveMap, error) {
 	fileSize := uint32(len(raw))
 
 	for _, f := range r.fields {
+		// BUG-H1 fix: skip overlapping fields (f.Offset < cursor means this field
+		// starts inside an already-covered range, which would double-cover bytes).
+		if f.Offset < cursor {
+			continue
+		}
 		if f.Offset > cursor {
 			gapSize := f.Offset - cursor
 			gapRange := model.ByteRange{Start: cursor, End: f.Offset}
@@ -604,18 +653,10 @@ func ExplainVdex(path string) (*model.PrimitiveMap, error) {
 		})
 	}
 
-	// Sort again to ensure perfect ordering
-	sort.Slice(finalFields, func(i, j int) bool {
-		if finalFields[i].Offset == finalFields[j].Offset {
-			return finalFields[i].Size < finalFields[j].Size
-		}
-		return finalFields[i].Offset < finalFields[j].Offset
-	})
-
-	// Log warnings if any legacy version detected
-	if versionStr != "027" {
-		// Just handle the mapping but we've successfully parsed it.
-	}
+	// BUG-N3: Removed the redundant second sort.Slice. After the BUG-H1 overlap fix
+	// the sweep loop guarantees finalFields are already in strict ascending order.
+	// BUG-N2: Removed the empty "if versionStr != '027'" dead-code block.
+	_ = versionStr // suppress "declared but not used" if compiler complains
 
 	return &model.PrimitiveMap{
 		Fields:       finalFields,

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -178,3 +179,106 @@ func TestExplainVdex_Comprehensive(t *testing.T) {
 	}
 	assert.Equal(t, pm.TotalBytes, expectedOffset)
 }
+
+// TestExplainVdex_MalformedLEB128_NoInfiniteLoop verifies BUG-C1 fix:
+// a verifier section containing an invalid LEB128 byte (0xFF at the very end,
+// which starts but never terminates a multibyte sequence) must not cause an
+// infinite loop. The test uses a tight timeout to detect any hang.
+func TestExplainVdex_MalformedLEB128_NoInfiniteLoop(t *testing.T) {
+	// Build a minimal VDEX with a verifier section whose pair-set data contains
+	// a dangling high-bit byte — this is an invalid LEB128 that ReadULEB128 will
+	// fail to decode, triggering the BUG-C1 code path.
+
+	// Checksum section: 4 bytes (1 DEX)
+	checksumOff := uint32(12 + 48)
+	checksumSize := uint32(4)
+
+	// DEX section: empty (0 size) but checksumCount=1 drives verifier
+	// Verifier section layout:
+	//   [0..3]  per-dex offset table: single uint32 pointing to offset 4
+	//   [4..7]  class_offsets[0] = 8   (first class has pairs starting at relative 8)
+	//   [8..11] class_offsets[1] = 0xFFFFFFFF (sentinel / NotVerified)
+	// actually numClass=1 derived from checksumCount. sentinel offset = classOffsets[1].
+	// But we have 2 entries: classOffsets[0]=8, classOffsets[1]=10 (setEnd).
+	// pair region = [8,10): just 2 bytes.
+	// We place 0xFF 0xFF there — first byte has continuation bit set but
+	// second byte also has continuation bit set; the sequence never terminates.
+	verifierData := []byte{
+		// per-dex offset [0..3]: block starts at offset 4
+		0x04, 0x00, 0x00, 0x00,
+		// class_offsets[0] = 8 (pairs for class 0 start here)
+		0x08, 0x00, 0x00, 0x00,
+		// class_offsets[1] = 10 (sentinel: pairs end here)
+		0x0A, 0x00, 0x00, 0x00,
+		// pair region [8..10): malformed LEB128 — continuation bits never cleared
+		0xFF, 0xFF,
+	}
+	verifierOff := checksumOff + checksumSize
+
+	header := buildRawHeader("vdex", "027\x00", 4)
+	var sectionBuf []byte
+	sectionBuf = appendSectionHeader(sectionBuf, 0, checksumOff, checksumSize)
+	sectionBuf = appendSectionHeader(sectionBuf, 1, 0, 0) // no DEX section data
+	sectionBuf = appendSectionHeader(sectionBuf, 2, verifierOff, uint32(len(verifierData)))
+	sectionBuf = appendSectionHeader(sectionBuf, 3, verifierOff+uint32(len(verifierData)), 0)
+
+	raw := append(header, sectionBuf...)
+	raw = append(raw, make([]byte, 4)...) // checksum bytes
+	raw = append(raw, verifierData...)
+
+	tmpFile := filepath.Join(t.TempDir(), "malformed_leb128.vdex")
+	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// We don't care about the error — only that it returns.
+		ExplainVdex(tmpFile) //nolint:errcheck
+	}()
+
+	select {
+	case <-done:
+		// Good — function returned without hanging.
+	case <-time.After(5 * time.Second):
+		t.Fatal("BUG-C1: ExplainVdex hung on malformed LEB128 input (infinite loop)")
+	}
+}
+
+// TestExplainVdex_NumSectionsOverflow verifies BUG-H3 fix:
+// a file with a huge numSections value that would overflow uint32 in the
+// original (12 + numSections*12) calculation must be rejected with an error
+// rather than silently wrapping and allocating billions of fields.
+func TestExplainVdex_NumSectionsOverflow(t *testing.T) {
+	// numSections = 0x15555556 → 0x15555556 * 12 = 0x100000008 (overflows uint32 to 8)
+	// Before the fix, headerEnd would become 20, passing the bounds check on a 20-byte file.
+	raw := make([]byte, 20)
+	copy(raw[0:4], "vdex")
+	copy(raw[4:8], "027\x00")
+	binary.LittleEndian.PutUint32(raw[8:12], 0x15555556) // numSections
+
+	tmpFile := filepath.Join(t.TempDir(), "overflow_sections.vdex")
+	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
+
+	_, err := ExplainVdex(tmpFile)
+	require.Error(t, err, "expected error for overflowing numSections, got nil")
+}
+
+// TestExplainVdex_ReadCStringBounded_SectionBoundary verifies BUG-H2 fix:
+// a verifier section whose extra-string region has no null terminator must
+// not produce a CString field that extends into the next section.
+func TestExplainVdex_ReadCStringBounded_SectionBoundary(t *testing.T) {
+	r := NewAnnotatedReader([]byte("ABCDEFGHIJ")) // 10 bytes, no null
+
+	// With maxOffset=5 the string must stop at byte 5 even though there is
+	// no null byte within the slice.
+	val := r.ReadCStringBounded(5, "test.str", "test", "bounded cstring")
+	assert.Equal(t, "ABCDE", val, "ReadCStringBounded should stop at maxOffset")
+	assert.Equal(t, uint32(5), r.Offset(), "offset must not advance past maxOffset")
+
+	// Confirm the emitted field does not cross the boundary.
+	require.Len(t, r.fields, 1)
+	f := r.fields[0]
+	assert.Equal(t, uint32(0), f.Offset)
+	assert.Equal(t, uint32(5), f.Size, "field size must equal maxOffset - startOffset")
+}
+
