@@ -84,3 +84,14 @@ func CalcPercent(v, total int) float64 {
 	}
 	return float64(v) / float64(total) * 100
 }
+
+// TrimNulls removes trailing null bytes from b and returns the result.
+// It does not allocate a new slice; it returns a sub-slice of b.
+func TrimNulls(b []byte) []byte {
+	for i := len(b) - 1; i >= 0; i-- {
+		if b[i] != 0 {
+			return b[:i+1]
+		}
+	}
+	return b[:0]
+}

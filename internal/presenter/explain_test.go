@@ -123,10 +123,11 @@ func TestWriteExplain_OffsetFilter(t *testing.T) {
 	assert.Contains(t, out, `"offset": 4`)
 	assert.Contains(t, out, `"logical_path": "vdex.header.version"`)
 
-	// 3. Not found
+	// 3. Not found — should return error (exit non-zero)
 	offset = uint32(9)
 	buf.Reset()
 	err = WriteExplain(&buf, pm, "text", &offset)
-	require.NoError(t, err)
+	require.Error(t, err, "expected error when offset not found")
+	assert.Contains(t, err.Error(), "no field covers offset 0x9")
 	assert.Contains(t, buf.String(), "No field found containing offset 0x9")
 }

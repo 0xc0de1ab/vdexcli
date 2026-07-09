@@ -479,6 +479,6 @@ func TestE2E_Explain_Offset_JSON(t *testing.T) {
 
 func TestE2E_Explain_Offset_NotFound(t *testing.T) {
 	out, _, code := runCLI(t, "explain", "--offset", "999999", testVdexPath)
-	assert.Equal(t, 0, code)
+	assert.Equal(t, 1, code, "offset not found should exit non-zero")
 	assert.Contains(t, out, "No field found containing offset 0xf423f")
 }

@@ -11,8 +11,6 @@ import (
 	"github.com/0xc0de1ab/vdexcli/internal/presenter"
 )
 
-var offsetStr string
-
 var explainCmd = &cobra.Command{
 	Use:   "explain [flags] <file.vdex>",
 	Short: "Explain VDEX byte-level structure with primitive fields",
@@ -28,13 +26,13 @@ Supports querying a specific offset, and outputting to JSON.`,
 			return err
 		}
 		g := getGlobalOpts(cmd)
-		return presenter.ValidateFormat(g.Format)
+		return presenter.ValidateExplainFormat(g.Format)
 	},
 	RunE: runExplain,
 }
 
 func init() {
-	explainCmd.Flags().StringVar(&offsetStr, "offset", "", "Start offset of the primitive field to query (supports hex with 0x)")
+	explainCmd.Flags().StringP("offset", "o", "", "Query the field covering this byte offset (supports hex with 0x, e.g. --offset 0x3c)")
 }
 
 func runExplain(cmd *cobra.Command, args []string) error {
@@ -48,6 +46,7 @@ func runExplain(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	offsetStr, _ := cmd.Flags().GetString("offset")
 	var offsetFilter *uint32
 	if offsetStr != "" {
 		val, err := strconv.ParseUint(offsetStr, 0, 32)

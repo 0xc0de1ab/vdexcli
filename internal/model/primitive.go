@@ -38,3 +38,17 @@ type ByteRange struct {
 	Start uint32 `json:"start"`
 	End   uint32 `json:"end"`
 }
+
+// FieldAtOffset returns the PrimitiveField that covers the given byte offset,
+// or nil if no field covers it.
+func (pm *PrimitiveMap) FieldAtOffset(offset uint32) *PrimitiveField {
+	if pm == nil {
+		return nil
+	}
+	for _, f := range pm.Fields {
+		if offset >= f.Offset && offset < f.Offset+f.Size {
+			return f
+		}
+	}
+	return nil
+}
