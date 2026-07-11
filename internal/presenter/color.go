@@ -1,11 +1,5 @@
 package presenter
 
-import (
-	"os"
-
-	"golang.org/x/term"
-)
-
 // ANSI color codes. Only applied when output is a terminal.
 const (
 	reset   = "\033[0m"
@@ -23,11 +17,8 @@ const (
 	dimWht  = "\033[2;37m"
 )
 
+// colorEnabled is set by platform-specific init() in color_terminal.go or color_wasm.go.
 var colorEnabled bool
-
-func init() {
-	colorEnabled = term.IsTerminal(int(os.Stdout.Fd()))
-}
 
 // SetColor overrides auto-detection (for --color=always/never).
 func SetColor(enabled bool) {

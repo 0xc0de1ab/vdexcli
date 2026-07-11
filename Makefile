@@ -21,7 +21,7 @@ GO_BUILD := CGO_ENABLED=0 go build \
 	$(if $(GCFLAGS),-gcflags "$(GCFLAGS)",) \
 	-o $(BUILD_DIR)/$(BIN)
 
-.PHONY: all build test lint clean fmt vet
+.PHONY: all build test lint clean fmt vet demo demo-serve
 
 all: fmt vet lint test build
 
@@ -54,3 +54,10 @@ cross-build:
 clean:
 	rm -rf build/
 	rm -f $(BIN)
+
+demo:
+	@bash demo/build_demo.sh
+
+demo-serve: demo
+	@echo "Serving demo at http://localhost:8080"
+	cd demo && python3 -m http.server 8080

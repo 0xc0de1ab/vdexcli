@@ -3,8 +3,6 @@ package parser
 import (
 	"encoding/binary"
 	"fmt"
-	"os"
-	"path/filepath"
 
 	"github.com/0xc0de1ab/vdexcli/internal/binutil"
 	"github.com/0xc0de1ab/vdexcli/internal/dex"
@@ -46,15 +44,13 @@ type legacyFields struct {
 	clcSize           uint32
 }
 
-// ParseVdexLegacy parses a VDEX v021-v026 file.
-func ParseVdexLegacy(path string, includeMeanings bool) (*model.VdexReport, []byte, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, nil, err
-	}
+// ParseVdexLegacyBytes parses a VDEX v021-v026 file from raw bytes.
+// This is the primary entry point and is compatible with all build targets including WASM.
+func ParseVdexLegacyBytes(data []byte, includeMeanings bool) (*model.VdexReport, []byte, error) {
+	raw := data
 
 	r := &model.VdexReport{
-		File:          filepath.Clean(path),
+		File:          "",
 		Size:          len(raw),
 		SchemaVersion: model.VdexSchemaVersion,
 	}

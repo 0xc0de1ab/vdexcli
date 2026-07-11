@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VDEX Analyzer — Byte-Level Inspector</title>
+  <meta name="description" content="Browser-based VDEX file analyzer powered by a Go/WASM engine. Drag and drop any VDEX file to get a complete byte-level explanation of every field." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- ── Header ── -->
+  <header class="site-header">
+    <div class="logo">
+      <span class="logo-icon">⬡</span>
+      <span class="logo-text">vdex<strong>cli</strong></span>
+    </div>
+    <nav class="header-nav">
+      <a href="https://github.com/0xc0de1ab/vdexcli" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </header>
+
+  <!-- ── Hero ── -->
+  <section class="hero">
+    <div class="hero-content">
+      <div class="badge" id="wasm-status">
+        <span class="badge-dot loading"></span>
+        <span class="badge-text">Loading WASM engine…</span>
+      </div>
+      <h1 class="hero-title">VDEX Byte-Level Inspector</h1>
+      <p class="hero-subtitle">
+        Drop any Android <code>.vdex</code> file for a complete,
+        offset-annotated breakdown — every byte explained.
+      </p>
+    </div>
+  </section>
+
+  <!-- ── Upload zone ── -->
+  <main class="main-content">
+    <div class="upload-zone" id="drop-zone" role="button" tabindex="0"
+         aria-label="Drop VDEX file or click to select">
+      <div class="upload-icon">📂</div>
+      <p class="upload-label">Drop <code>.vdex</code> file here</p>
+      <p class="upload-sub">or <button id="file-picker-btn" class="link-btn">browse files</button></p>
+      <input type="file" id="file-input" accept=".vdex" hidden />
+    </div>
+
+    <!-- ── File info bar ── -->
+    <div class="file-info-bar hidden" id="file-info-bar">
+      <span class="file-icon">🗜️</span>
+      <span class="file-name" id="file-name-label">—</span>
+      <span class="file-size" id="file-size-label">—</span>
+      <div class="info-tabs">
+        <button class="tab-btn active" data-tab="explain" id="tab-explain">Explain</button>
+        <button class="tab-btn" data-tab="parse" id="tab-parse">Parse</button>
+      </div>
+      <button class="reset-btn" id="reset-btn" title="Load another file">✕</button>
+    </div>
+
+    <!-- ── Loading spinner ── -->
+    <div class="analyze-spinner hidden" id="analyze-spinner">
+      <div class="spinner"></div>
+      <span>Analyzing…</span>
+    </div>
+
+    <!-- ── Explain view ── -->
+    <div class="result-panel hidden" id="panel-explain">
+      <!-- Coverage bar -->
+      <div class="coverage-bar-wrap">
+        <div class="coverage-label">
+          <span>Byte coverage</span>
+          <span id="coverage-pct" class="coverage-pct">—</span>
+        </div>
+        <div class="coverage-bar" id="coverage-bar">
+          <div class="coverage-fill" id="coverage-fill" style="width:0%"></div>
+        </div>
+        <div class="coverage-stats" id="coverage-stats">
+          <span id="stat-total">—</span> bytes total ·
+          <span id="stat-fields">—</span> fields ·
+          <span id="stat-gaps">—</span> unmapped gaps
+        </div>
+      </div>
+
+      <!-- Section filter -->
+      <div class="filter-row">
+        <label for="section-filter">Filter path:</label>
+        <input type="text" id="section-filter" class="filter-input" placeholder="e.g. vdex.dex[0].string_ids" />
+        <label for="type-filter">Type:</label>
+        <select id="type-filter" class="filter-select">
+          <option value="">All types</option>
+          <option value="magic">magic</option>
+          <option value="uint8">uint8</option>
+          <option value="uint16_le">uint16_le</option>
+          <option value="uint32_le">uint32_le</option>
+          <option value="uint64_le">uint64_le</option>
+          <option value="uleb128">uleb128</option>
+          <option value="bytes">bytes</option>
+          <option value="padding">padding</option>
+        </select>
+        <label class="checkbox-label">
+          <input type="checkbox" id="hide-padding" checked />
+          Hide padding
+        </label>
+        <button id="copy-json-btn" class="icon-btn" title="Copy JSON">📋 Copy JSON</button>
+      </div>
+
+      <!-- Field table -->
+      <div class="table-wrap">
+        <table class="field-table" id="field-table">
+          <thead>
+            <tr>
+              <th class="col-offset">Offset</th>
+              <th class="col-size">Size</th>
+              <th class="col-type">Type</th>
+              <th class="col-path">Logical Path</th>
+              <th class="col-value">Value</th>
+              <th class="col-hex">Hex</th>
+              <th class="col-desc">Description</th>
+            </tr>
+          </thead>
+          <tbody id="field-tbody"></tbody>
+        </table>
+      </div>
+      <div class="row-count" id="row-count"></div>
+    </div>
+
+    <!-- ── Parse view ── -->
+    <div class="result-panel hidden" id="panel-parse">
+      <div class="parse-grid" id="parse-grid"></div>
+    </div>
+
+    <!-- ── Error banner ── -->
+    <div class="error-banner hidden" id="error-banner">
+      <span class="error-icon">⚠️</span>
+      <span id="error-message">Unknown error</span>
+    </div>
+  </main>
+
+  <!-- ── Footer ── -->
+  <footer class="site-footer">
+    <span>Powered by <strong>vdexcli</strong> WASM engine · Go + WebAssembly · 100% client-side</span>
+  </footer>
+
+  <!-- ── Hex detail modal ── -->
+  <div class="modal-overlay hidden" id="hex-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h2 id="modal-title">Field Detail</h2>
+        <button class="modal-close" id="modal-close">✕</button>
+      </div>
+      <div class="modal-body" id="modal-body"></div>
+    </div>
+  </div>
+
+  <!-- WASM runtime + app logic -->
+  <script src="wasm_exec.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>

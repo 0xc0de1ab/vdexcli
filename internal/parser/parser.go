@@ -8,24 +8,20 @@ package parser
 import (
 	"encoding/binary"
 	"fmt"
-	"os"
-	"path/filepath"
 
 	"github.com/0xc0de1ab/vdexcli/internal/binutil"
 	"github.com/0xc0de1ab/vdexcli/internal/dex"
 	"github.com/0xc0de1ab/vdexcli/internal/model"
 )
 
-// ParseVdex reads a VDEX file and returns a structured report.
+// ParseVdexBytes parses a VDEX file from raw bytes and returns a structured report.
 // When includeMeanings is true the report includes human-readable field descriptions.
-func ParseVdex(path string, includeMeanings bool) (*model.VdexReport, []byte, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, nil, err
-	}
+// This is the primary entry point and is compatible with all build targets including WASM.
+func ParseVdexBytes(data []byte, includeMeanings bool) (*model.VdexReport, []byte, error) {
+	raw := data
 
 	r := &model.VdexReport{
-		File:          filepath.Clean(path),
+		File:          "",
 		Size:          len(raw),
 		SchemaVersion: model.VdexSchemaVersion,
 	}
@@ -46,7 +42,7 @@ func ParseVdex(path string, includeMeanings bool) (*model.VdexReport, []byte, er
 
 	// Auto-detect legacy format and delegate.
 	if IsLegacyVersion(r.Header.Version) {
-		return ParseVdexLegacy(path, includeMeanings)
+		return ParseVdexLegacyBytes(data, includeMeanings)
 	}
 
 	if r.Header.Version != model.VdexCurrentVersion {

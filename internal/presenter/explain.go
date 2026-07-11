@@ -316,6 +316,40 @@ func formatValue(f *model.PrimitiveField) string {
 			return fmt.Sprintf("%q", val)
 		}
 	}
+	// class_defs.access_flags: show bit decomposition from Description
+	if strings.HasSuffix(f.LogicalPath, ".access_flags") {
+		if val, ok := convertToUint64(f.ParsedValue); ok {
+			if f.Description != "" {
+				return f.Description
+			}
+			return fmt.Sprintf("0x%04x", val)
+		}
+	}
+	// superclass_idx / source_file_idx: show 0xFFFFFFFF sentinel explicitly
+	if strings.HasSuffix(f.LogicalPath, ".superclass_idx") ||
+		strings.HasSuffix(f.LogicalPath, ".source_file_idx") {
+		if val, ok := convertToUint64(f.ParsedValue); ok {
+			if uint32(val) == 0xFFFFFFFF {
+				return "0xFFFFFFFF (none)"
+			}
+			return fmt.Sprintf("%d", val)
+		}
+	}
+	// string_ids entries: show inline resolved string from Description
+	if strings.Contains(f.LogicalPath, ".string_ids[") {
+		if val, ok := convertToUint64(f.ParsedValue); ok {
+			if f.Description != "" {
+				// Description = `"LHello;" — File offset (0xcc) ...`
+				// Show: offset + first part of description
+				shortDesc := f.Description
+				if idx := strings.Index(shortDesc, " — "); idx >= 0 {
+					shortDesc = shortDesc[:idx] // just the quoted string part
+				}
+				return fmt.Sprintf("→ 0x%x (%s)", val, shortDesc)
+			}
+			return fmt.Sprintf("→ 0x%x", val)
+		}
+	}
 	if f.LogicalPath == "vdex.gap" {
 		return f.Summary
 	}

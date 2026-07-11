@@ -4,12 +4,69 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"os"
 	"sort"
+	"strings"
 
 	"github.com/0xc0de1ab/vdexcli/internal/binutil"
 	"github.com/0xc0de1ab/vdexcli/internal/model"
 )
+
+// accessFlagsDescription returns a human-readable description of DEX class access_flags.
+// See https://source.android.com/docs/core/runtime/dex-format#access-flags
+func accessFlagsDescription(flags uint32) string {
+	const (
+		accPublic    = 0x0001
+		accPrivate   = 0x0002
+		accProtected = 0x0004
+		accStatic    = 0x0008
+		accFinal     = 0x0010
+		accSynchronized = 0x0020 // for methods
+		accVolatile  = 0x0040 // for fields
+		accBridge    = 0x0040 // for methods
+		accTransient = 0x0080 // for fields
+		accVarargs   = 0x0080 // for methods
+		accNative    = 0x0100
+		accInterface = 0x0200
+		accAbstract  = 0x0400
+		accStrict    = 0x0800
+		accSynthetic = 0x1000
+		accAnnotation = 0x2000
+		accEnum      = 0x4000
+		accConstructor = 0x10000
+		accDeclaredSynchronized = 0x20000
+	)
+	type flag struct {
+		bit  uint32
+		name string
+	}
+	knownFlags := []flag{
+		{accPublic, "PUBLIC"}, {accPrivate, "PRIVATE"}, {accProtected, "PROTECTED"},
+		{accStatic, "STATIC"}, {accFinal, "FINAL"}, {accSynchronized, "SYNCHRONIZED"},
+		{accVolatile, "VOLATILE/BRIDGE"}, {accTransient, "TRANSIENT/VARARGS"},
+		{accNative, "NATIVE"}, {accInterface, "INTERFACE"}, {accAbstract, "ABSTRACT"},
+		{accStrict, "STRICT"}, {accSynthetic, "SYNTHETIC"}, {accAnnotation, "ANNOTATION"},
+		{accEnum, "ENUM"}, {accConstructor, "CONSTRUCTOR"},
+		{accDeclaredSynchronized, "DECLARED_SYNCHRONIZED"},
+	}
+	var parts []string
+	for _, f := range knownFlags {
+		if flags&f.bit != 0 {
+			parts = append(parts, f.name)
+		}
+	}
+	unknown := flags
+	for _, f := range knownFlags {
+		unknown &^= f.bit
+	}
+	desc := fmt.Sprintf("access_flags=0x%04x", flags)
+	if len(parts) > 0 {
+		desc += " [" + strings.Join(parts, "|") + "]"
+	}
+	if unknown != 0 {
+		desc += fmt.Sprintf(" (unknown_bits=0x%x)", unknown)
+	}
+	return desc
+}
 
 type AnnotatedReader struct {
 	data   []byte
@@ -232,11 +289,11 @@ type sectionInfo struct {
 	size   uint32
 }
 
-func ExplainVdex(path string) (*model.PrimitiveMap, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
+// ExplainVdexBytes parses raw VDEX bytes and returns a byte-level annotated field map.
+// Every byte in data is accounted for in the returned PrimitiveMap.
+// This is the primary entry point and is compatible with all build targets including WASM.
+func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
+	raw := data
 
 	if len(raw) < 12 {
 		return nil, fmt.Errorf("file too small for VDEX header (%d bytes, need 12)", len(raw))
@@ -254,7 +311,18 @@ func ExplainVdex(path string) (*model.PrimitiveMap, error) {
 	versionMagic := r.ReadMagic(4, "vdex.header.version", "VDEX version number", "The version of the VDEX format.")
 	versionStr := string(trimNulls([]byte(versionMagic)))
 
+	// I-02 fix: Legacy VDEX (v021-026) has a different 28-byte header layout where
+	// offset[8:12] is dexSectionVersion, NOT numSections. Reading it as numSections
+	// would produce millions of garbage sections. Reject legacy files explicitly.
+	if IsLegacyVersion(versionStr) {
+		return nil, fmt.Errorf(
+			"ExplainVdex: legacy VDEX v%s is not supported by byte-level explain; use 'vdexcli parse' for legacy format",
+			versionStr,
+		)
+	}
+
 	numSections := r.ReadUint32LE("vdex.header.sections", "Number of sections", "Total number of sections defined in the section table.")
+
 
 	// 2. Section Headers Table
 	// BUG-H3 fix: use uint64 arithmetic to prevent uint32 overflow when numSections is large.
@@ -331,27 +399,27 @@ func ExplainVdex(path string) (*model.PrimitiveMap, error) {
 			}
 
 			_ = r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.checksum", dexIdx), "DEX checksum", "Adler32 checksum of the DEX file.")
-			_ = r.ReadBytes(20, fmt.Sprintf("vdex.dex[%d].header.signature", dexIdx), "DEX signature", "SHA-1 signature of the DEX file.")
+			_ = r.ReadBytes(20, fmt.Sprintf("vdex.dex[%d].header.signature", dexIdx), "DEX SHA-1 signature", "SHA-1 signature of the DEX file (20 bytes).")
 			fileSize := r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.file_size", dexIdx), "DEX file size", "Declared size of the DEX file in bytes.")
-			_ = r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.header_size", dexIdx), "DEX header size", "Size of the DEX header in bytes (typically 112).")
-			_ = r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.endian_tag", dexIdx), "DEX endian tag", "Endianness tag (typically 0x12345678).")
-			_ = r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.link_size", dexIdx), "DEX link size", "Size of the link section in bytes.")
-			_ = r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.link_off", dexIdx), "DEX link offset", "File offset of the link section.")
-			_ = r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.map_off", dexIdx), "DEX map offset", "File offset of the map list.")
-			_ = r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.string_ids_size", dexIdx), "DEX string IDs size", "Number of string identifiers in the string IDs table.")
-			_ = r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.string_ids_off", dexIdx), "DEX string IDs offset", "File offset of the string IDs table.")
-			_ = r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.type_ids_size", dexIdx), "DEX type IDs size", "Number of type identifiers in the type IDs table.")
-			_ = r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.type_ids_off", dexIdx), "DEX type IDs offset", "File offset of the type IDs table.")
-			_ = r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.proto_ids_size", dexIdx), "DEX proto IDs size", "Number of prototype identifiers in the prototype IDs table.")
-			_ = r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.proto_ids_off", dexIdx), "DEX proto IDs offset", "File offset of the prototype IDs table.")
-			_ = r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.field_ids_size", dexIdx), "DEX field IDs size", "Number of field identifiers in the field IDs table.")
-			_ = r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.field_ids_off", dexIdx), "DEX field IDs offset", "File offset of the field IDs table.")
-			_ = r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.method_ids_size", dexIdx), "DEX method IDs size", "Number of method identifiers in the method IDs table.")
-			_ = r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.method_ids_off", dexIdx), "DEX method IDs offset", "File offset of the method IDs table.")
-			classDefsSize := r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.class_defs_size", dexIdx), "DEX class defs size", "Number of class definitions in the class definitions table.")
-			_ = r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.class_defs_off", dexIdx), "DEX class defs offset", "File offset of the class definitions table.")
+			headerSize := r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.header_size", dexIdx), "DEX header size", "Size of the DEX header in bytes (typically 112).")
+			_ = r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.endian_tag", dexIdx), "DEX endian tag", "Endianness tag (0x12345678 = little-endian).")
+			linkSize := r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.link_size", dexIdx), "DEX link size", "Size of the link section in bytes (0 if unused).")
+			linkOff := r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.link_off", dexIdx), "DEX link offset", "File offset of the link section (0 if unused).")
+			mapOff := r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.map_off", dexIdx), "DEX map offset", "File offset of the map_list item.")
+			stringIdsSize := r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.string_ids_size", dexIdx), "DEX string IDs count", "Number of elements in the string identifiers list.")
+			stringIdsOff := r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.string_ids_off", dexIdx), "DEX string IDs offset", "Offset from start of the file to the string identifiers list.")
+			typeIdsSize := r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.type_ids_size", dexIdx), "DEX type IDs count", "Number of elements in the type identifiers list.")
+			typeIdsOff := r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.type_ids_off", dexIdx), "DEX type IDs offset", "Offset from start of the file to the type identifiers list.")
+			protoIdsSize := r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.proto_ids_size", dexIdx), "DEX proto IDs count", "Number of elements in the method prototype identifiers list.")
+			protoIdsOff := r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.proto_ids_off", dexIdx), "DEX proto IDs offset", "Offset from start of the file to the proto identifiers list.")
+			fieldIdsSize := r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.field_ids_size", dexIdx), "DEX field IDs count", "Number of elements in the field identifiers list.")
+			fieldIdsOff := r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.field_ids_off", dexIdx), "DEX field IDs offset", "Offset from start of the file to the field identifiers list.")
+			methodIdsSize := r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.method_ids_size", dexIdx), "DEX method IDs count", "Number of elements in the method identifiers list.")
+			methodIdsOff := r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.method_ids_off", dexIdx), "DEX method IDs offset", "Offset from start of the file to the method identifiers list.")
+			classDefsSize := r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.class_defs_size", dexIdx), "DEX class defs count", "Number of elements in the class definitions list.")
+			classDefsOff := r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.class_defs_off", dexIdx), "DEX class defs offset", "Offset from start of the file to the class definitions list.")
 			_ = r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.data_size", dexIdx), "DEX data size", "Size of the data section in bytes.")
-			_ = r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.data_off", dexIdx), "DEX data offset", "File offset of the data section.")
+			_ = r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.data_off", dexIdx), "DEX data offset", "Offset from start of the file to the data section.")
 
 			dexDefs = append(dexDefs, classDefsSize)
 
@@ -360,10 +428,40 @@ func ExplainVdex(path string) (*model.PrimitiveMap, error) {
 				effectiveSize = ds.offset+ds.size - dexStart
 			}
 
-			payloadSize := int(effectiveSize) - 112
-			if payloadSize > 0 {
-				r.ReadBytes(payloadSize, fmt.Sprintf("vdex.dex[%d].payload", dexIdx), "DEX payload", "The remaining tables and data of the DEX file.")
+			// Clamp header_size to header_size field value (usually 112)
+			if headerSize < 112 || headerSize > effectiveSize {
+				headerSize = 112
 			}
+
+			dexEnd := dexStart + effectiveSize
+
+			// Delegate all DEX payload annotation to the sub-function in explain_dex.go.
+			// This keeps ExplainVdex() focused on VDEX-level structure while the
+			// complexity of DEX internal table parsing lives in a dedicated file.
+			annotateDexPayload(dexPayloadParams{
+				raw:           raw,
+				r:             r,
+				dexIdx:        dexIdx,
+				dexStart:      dexStart,
+				effectiveSize: effectiveSize,
+				headerSize:    headerSize,
+				stringIdsOff:  stringIdsOff,
+				stringIdsSize: stringIdsSize,
+				typeIdsOff:    typeIdsOff,
+				typeIdsSize:   typeIdsSize,
+				protoIdsOff:   protoIdsOff,
+				protoIdsSize:  protoIdsSize,
+				fieldIdsOff:   fieldIdsOff,
+				fieldIdsSize:  fieldIdsSize,
+				methodIdsOff:  methodIdsOff,
+				methodIdsSize: methodIdsSize,
+				classDefsOff:  classDefsOff,
+				classDefsSize: classDefsSize,
+				linkOff:       linkOff,
+				linkSize:      linkSize,
+				mapOff:        mapOff,
+			})
+			_ = dexEnd // dexEnd is now computed inside annotateDexPayload
 
 			cursor = dexStart + effectiveSize
 			dexIdx++
@@ -557,17 +655,64 @@ func ExplainVdex(path string) (*model.PrimitiveMap, error) {
 			}
 
 			count := size / 8
+
+			// I-04 fix: Compute maskBits from class_defs_size of the corresponding DEX.
+			// maskBits determines the bit-field layout of packed_data:
+			//   bits[0        : maskBits)       = next_pos_delta (chain delta)
+			//   bits[maskBits : 2*maskBits)     = class_def_idx
+			//   bits[2*maskBits : 32)           = hash_bits (upper bits of class name hash)
+			var classDefs uint32
+			if i < len(dexDefs) {
+				classDefs = dexDefs[i]
+			}
+			var maskBits uint32
+			if classDefs > 0 {
+				capped := classDefs
+				if capped > 65536 {
+					capped = 65536
+				}
+				maskBits = binutil.MinimumBitsToStore(capped - 1)
+				if maskBits > 30 {
+					maskBits = 30
+				}
+			}
+			mask := (uint32(1) << maskBits) - 1
+
 			for b := uint32(0); b < count; b++ {
 				r.ReadUint32LE(
 					fmt.Sprintf("vdex.typelookup.dex[%d].entry[%d].string_offset", i, b),
 					"String offset",
-					"Offset of the class descriptor string in the DEX file.",
+					"Offset of the class descriptor string in the DEX string_data section.",
 				)
-				r.ReadUint32LE(
+				// Read packed_data raw value first, then build a rich description.
+				packed := r.ReadUint32LE(
 					fmt.Sprintf("vdex.typelookup.dex[%d].entry[%d].packed_data", i, b),
-					"Packed data",
-					"Packed class definition index and next chain delta.",
+					"Packed data (bit fields: hash_bits | class_def_idx | next_pos_delta)",
+					"", // description filled below
 				)
+				// Overwrite the description of the field we just emitted with
+				// the decoded bit-field values.
+				if len(r.fields) > 0 {
+					lastField := r.fields[len(r.fields)-1]
+					var nextDelta, classDefIdx, hashBits uint32
+					if maskBits == 0 {
+						hashBits = packed
+					} else {
+						nextDelta = packed & mask
+						classDefIdx = (packed >> maskBits) & mask
+						hashBits = packed >> (2 * maskBits)
+					}
+					lastField.Description = fmt.Sprintf(
+						"Packed bit fields (maskBits=%d): "+
+							"hash_bits=0x%x (bits[%d:32], upper hash of class descriptor), "+
+							"class_def_idx=%d (bits[%d:%d], index into class_defs table), "+
+							"next_pos_delta=%d (bits[0:%d], bucket-chain delta; 0=end of chain).",
+						maskBits,
+						hashBits, 2*maskBits,
+						classDefIdx, maskBits, 2*maskBits,
+						nextDelta, maskBits,
+					)
+				}
 			}
 
 			expectedEnd := tableStart + 4 + size

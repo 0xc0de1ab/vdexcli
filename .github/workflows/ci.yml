@@ -1,12 +1,19 @@
-name: CI
+name: "[01] CI Build"
 
 on:
   push:
     branches: [main]
-    paths-ignore: ['*.md', 'docs/**', 'LICENSE', '.github/ISSUE_TEMPLATE/**']
-  pull_request:
-    branches: [main]
-    paths-ignore: ['*.md', 'docs/**', 'LICENSE', '.github/ISSUE_TEMPLATE/**']
+    paths-ignore:
+      - "*.md"
+      - "docs/**"
+      - "LICENSE"
+      - ".github/ISSUE_TEMPLATE/**"
+  workflow_dispatch:
+    inputs:
+      skip_cache:
+        description: "Disable Go module cache (force fresh download)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -16,39 +23,103 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  lint:
+  # ── 1. Format check ──────────────────────────────────────────────
+  fmt-check:
+    name: "fmt"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          cache: ${{ github.event.inputs.skip_cache != 'true' }}
+      - name: Check gofmt
+        run: |
+          diff=$(gofmt -l .)
+          if [ -n "$diff" ]; then
+            echo "::error::These files are not gofmt-formatted:"
+            echo "$diff"
+            exit 1
+          fi
+
+  # ── 2. go vet + mod tidy check ──────────────────────────────────
+  vet:
+    name: "vet"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: ${{ github.event.inputs.skip_cache != 'true' }}
+      - name: go mod tidy (no drift)
+        run: go mod tidy && git diff --exit-code go.mod go.sum
+      - name: go mod verify
+        run: go mod verify
+      - name: go vet
+        run: go vet ./...
+      - name: WASM vet
+        run: GOOS=js GOARCH=wasm go vet ./wasm/
+
+  # ── 3. golangci-lint ────────────────────────────────────────────
+  lint:
+    name: "lint"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: ${{ github.event.inputs.skip_cache != 'true' }}
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
           version: latest
 
-  test:
+  # ── 4. Vulnerability scan ────────────────────────────────────────
+  vulncheck:
+    name: "vulncheck"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          cache: ${{ github.event.inputs.skip_cache != 'true' }}
+      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - run: govulncheck ./...
+
+  # ── 5. Test + coverage ──────────────────────────────────────────
+  test:
+    name: "test"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: ${{ github.event.inputs.skip_cache != 'true' }}
       - name: Install zstd
         run: sudo apt-get install -y zstd
       - name: Run tests
         run: go test -v -count=1 ./...
-      - name: Coverage (testable packages)
+      - name: Coverage check (≥ 85%)
         run: |
-          go test -coverprofile=coverage.out ./internal/binutil/ ./internal/parser/ ./internal/modifier/ ./internal/extractor/ ./internal/model/ ./internal/presenter/
+          go test -coverprofile=coverage.out \
+            ./internal/binutil/ \
+            ./internal/parser/ \
+            ./internal/modifier/ \
+            ./internal/extractor/ \
+            ./internal/model/ \
+            ./internal/presenter/ \
+            ./pkg/vdex/
           total=$(go tool cover -func=coverage.out | tail -1 | awk '{print $3}' | tr -d '%')
           echo "Total coverage: ${total}%"
           if [ "$(echo "$total < 85" | bc)" -eq 1 ]; then
             echo "::error::Coverage ${total}% is below minimum 85%"
             exit 1
           fi
-      - name: Upload coverage
+      - name: Upload coverage artifact
         if: github.event_name == 'push'
         uses: actions/upload-artifact@v4
         with:
@@ -56,12 +127,14 @@ jobs:
           path: coverage.out
           retention-days: 7
 
+  # ── 6. Cross-platform build ──────────────────────────────────────
   build:
+    name: "build (${{ matrix.goos }}/${{ matrix.goarch }})"
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        goos: [linux, darwin, windows]
+        goos:   [linux, darwin, windows]
         goarch: [amd64, arm64]
         exclude:
           - goos: windows
@@ -71,52 +144,42 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          cache: ${{ github.event.inputs.skip_cache != 'true' }}
       - name: Build
         env:
-          GOOS: ${{ matrix.goos }}
+          GOOS:   ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
           make build GOOS=$GOOS GOARCH=$GOARCH
           ls -lh build/$GOOS-$GOARCH/release/
-      - name: Smoke test
+      - name: Smoke test (linux/amd64 only)
         if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
         run: |
           build/linux-amd64/release/vdexcli version
           build/linux-amd64/release/vdexcli dump --format jsonl | head -c 100
 
-  vet:
+  # ── 7. WASM build ───────────────────────────────────────────────
+  build-wasm:
+    name: "build (wasm)"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: go mod tidy && git diff --exit-code go.mod go.sum
-      - run: go mod verify
-      - run: go vet ./...
-
-  vulncheck:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
-      - run: govulncheck ./...
-
-  fmt-check:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-      - name: Check gofmt
+          cache: ${{ github.event.inputs.skip_cache != 'true' }}
+      - name: Build WASM
         run: |
-          diff=$(gofmt -l .)
-          if [ -n "$diff" ]; then
-            echo "Files not formatted:"
-            echo "$diff"
-            exit 1
-          fi
+          GOOS=js GOARCH=wasm go build \
+            -trimpath \
+            -ldflags="-s -w" \
+            -o vdex.wasm \
+            ./wasm/
+          ls -lh vdex.wasm
+      - name: Upload WASM artifact
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: vdex-wasm
+          path: vdex.wasm
+          retention-days: 7
