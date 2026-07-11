@@ -3,267 +3,501 @@
 [![CI](https://github.com/0xc0de1ab/vdexcli/actions/workflows/ci.yml/badge.svg)](https://github.com/0xc0de1ab/vdexcli/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/0xc0de1ab/vdexcli)](https://github.com/0xc0de1ab/vdexcli/releases/latest)
 [![Go Report Card](https://goreportcard.com/badge/github.com/0xc0de1ab/vdexcli)](https://goreportcard.com/report/github.com/0xc0de1ab/vdexcli)
+[![Go Reference](https://pkg.go.dev/badge/github.com/0xc0de1ab/vdexcli/pkg/vdex.svg)](https://pkg.go.dev/github.com/0xc0de1ab/vdexcli/pkg/vdex)
 
-See every byte of an Android VDEX file. Parse, extract, diff, and patch — from the command line.
+**See every byte of an Android VDEX file.**
+Parse, explain, extract, diff, and patch — from the CLI, as a Go library, or in the browser via WebAssembly.
 
-```bash
-$ vdexcli parse app.vdex
-vdex magic="vdex" version="027" sections=4
-  kChecksumSection      off=0x3c   size=4
-  kDexFileSection       off=0x40   size=112
-  kVerifierDepsSection  off=0xb0   size=28
-verifier_deps:
-  [dex 0] verified=246 unverified=87 pairs=565 extras=7
-byte_coverage: 2256/2256 bytes (100.0%)
+한국어 문서: [README.ko.md](README.ko.md)
+
 ```
+$ vdexcli explain app.vdex
+
+offset     size  type        path                                value
+---------- ----- ----------- ----------------------------------- ---------------------------
+0x00000000     4  magic       vdex.header.magic                  "vdex"
+0x00000004     4  bytes       vdex.header.version                "027\0"
+0x00000008     4  uint32_le   vdex.header.num_sections           4
+0x0000000c    12  bytes       vdex.section[0].header             kind=0 off=0x3c size=4
+0x00000018    12  bytes       vdex.section[1].header             kind=1 off=0x40 size=112
+...
+0x000000cc     0  padding     <gap>                              —
+coverage: 204/204 bytes (100.0%) — all bytes explained
+```
+
+---
+
+## Contents
+
+- [What is VDEX?](#what-is-vdex)
+- [Features](#features)
+- [Quick Start](#quick-start)
+- [CLI Usage](#cli-usage)
+  - [parse](#parse)
+  - [explain](#explain)
+  - [extract-dex](#extract-dex)
+  - [modify](#modify)
+  - [diff](#diff)
+  - [dump](#dump)
+- [Go Library API](#go-library-api)
+- [WebAssembly Engine](#webassembly-engine)
+- [Browser Demo](#browser-demo)
+- [Install](#install)
+- [Project Structure](#project-structure)
+- [CI / Workflows](#ci--workflows)
+- [Testing](#testing)
+- [VDEX v027 Format Reference](#vdex-v027-format-reference)
+- [Contributing](#contributing)
+
+---
+
+## What is VDEX?
+
+VDEX (**V**erified **DEX**) is a binary container produced by the Android ART runtime during `dexpreopt`. It wraps one or more DEX files together with:
+
+- **Verifier dependency data** — which classes ART verified and against what type hierarchy
+- **Checksum table** — CRC32 fingerprint for each embedded DEX
+- **Type lookup table** — hash table for fast class descriptor lookups
+
+VDEX files live at `/data/dalvik-cache/` or inside `.dm` (`.vdex`-carrying DM format) on-device files. Understanding their structure is essential for:
+
+- Auditing `dexpreopt` output in AOSP builds
+- Researching ART verification behavior
+- Building custom class-loader tooling
+
+---
+
+## Features
+
+| Category | Capability |
+|----------|-----------|
+| **CLI** | `parse`, `explain`, `extract-dex`, `modify`, `diff`, `dump` |
+| **Output formats** | `text`, `json`, `jsonl`, `summary`, `sections`, `coverage`, `table` |
+| **Byte-level explain** | Every byte mapped to a named, typed, annotated field |
+| **DEX decomposition** | `string_ids`, `type_ids`, `proto_ids`, `field_ids`, `method_ids`, `class_defs` individually resolved |
+| **Go library** | `pkg/vdex` — importable public API (`ExplainBytes`, `ParseBytes`, ...) |
+| **WebAssembly** | `wasm/` — runs in any browser, zero server-side dependencies |
+| **Browser demo** | Drag-and-drop VDEX analyzer at `demo/index.html` |
+| **AOSP-compatible** | Section-absolute offsets matching ART runtime encoding |
+| **Diagnostics** | 34 error/warning codes with actionable hints |
+| **Strict mode** | Pattern-filtered warnings treated as fatal for CI gating |
+| **Verifier patching** | Replace or merge verifier-deps via JSON |
+| **DEX extraction** | Pull embedded DEX files with customizable filename templates |
+| **Diff** | Structural comparison; exit 0 = identical, 1 = different |
+
+---
 
 ## Quick Start
 
 ```bash
+# Install
 go install github.com/0xc0de1ab/vdexcli@latest
 
-vdexcli parse app.vdex                    # full structural dump
-vdexcli parse --json app.vdex             # machine-readable JSON
-vdexcli explain app.vdex                  # byte-level field map (hex dump table)
-vdexcli extract-dex app.vdex ./out/       # pull embedded DEX files
-vdexcli diff before.vdex after.vdex       # compare two builds
-vdexcli modify --verifier-json patch.json in.vdex out.vdex  # patch verifier deps
+# Parse — full structural dump
+vdexcli parse app.vdex
+
+# Explain — byte-level annotated field map
+vdexcli explain app.vdex
+
+# Query a specific byte offset
+vdexcli explain --offset 0x3c app.vdex
+
+# Extract embedded DEX files
+vdexcli extract-dex app.vdex ./dex-out/
+
+# Compare two builds
+vdexcli diff before.vdex after.vdex
+
+# Patch verifier dependencies
+vdexcli modify --verifier-json patch.json in.vdex out.vdex
 ```
 
-## Features
+---
 
-- **Parse** — Headers, sections, checksums, DEX files, verifier deps, type lookup tables — with byte-level coverage
-- **Explain** — Byte-level primitive field map with hex dump, type, and value annotations; query any byte offset
-- **Extract** — Pull embedded DEX files for disassembly with jadx/baksmali
-- **Modify** — Patch verifier-deps section via JSON (replace or merge mode)
-- **Diff** — Structural comparison of two VDEX files (exit 0=identical, 1=different)
-- **Diagnostics** — 34 error/warning codes with [actionable hints](#diagnostics-with-actionable-hints)
-- **7 output formats** — text, json, jsonl, summary, sections, coverage, table
-- **ART-compatible** — Section-absolute offsets matching AOSP ART runtime encoding
+## CLI Usage
 
-More: [output examples](#example-output), [CI integration](#diagnostics-with-actionable-hints), [error handling](#error-handling).
+### parse
 
-### Use Cases
+Parse the complete VDEX structure and display it in the chosen format.
 
-- **AOSP build verification** — scan all VDEX files after `dexpreopt` to confirm 100% byte coverage and no parse errors
-- **Verifier patching** — selectively mark classes as verified/unverified for testing ART behavior
-- **DEX extraction** — pull embedded DEX files from VDEX containers for disassembly with `jadx`/`baksmali`
-- **CI/CD integration** — `--format summary` provides a single parseable line for automated checks
-- **Pre/post comparison** — `vdexcli diff` detects structural changes between VDEX builds
+```bash
+vdexcli parse app.vdex                            # human-readable text (default)
+vdexcli parse --json app.vdex                     # pretty-printed JSON
+vdexcli parse --format jsonl app.vdex             # compact single-line JSON
+vdexcli parse --format summary app.vdex           # one-line key=value for CI
+vdexcli parse --format sections app.vdex          # TSV section table
+vdexcli parse --format coverage app.vdex          # byte coverage only
+vdexcli parse --format table --color never app.vdex  # aligned table
+vdexcli parse --strict --strict-warn "re:(checksum|version)" app.vdex
+```
 
-### Performance
-
-Measured on a single core (arm64), single VDEX file:
-
-| File size | Parse time | Throughput |
-|-----------|-----------|------------|
-| 204 B | ~4 ms | instant |
-| 5.6 KB | ~4 ms | instant |
-| 178 KB (28 dex) | ~13 ms | ~14 MB/s |
-
-Batch scan: **166 files in 1.4 seconds** (including DM format class inference).
-
-## Example Output
-
-### Parsing a VDEX with embedded DEX
+**Sample output (text):**
 
 ```
-$ vdexcli parse --show-meaning=false app.vdex
-
 file: app.vdex
 size: 204 bytes
 vdex magic="vdex" version="027" sections=4
 sections:
-  kind=kChecksumSection (0) off=0x3c size=0x4
-    DEX file location checksum list (one uint32 per input dex)
-  kind=kDexFileSection (1) off=0x40 size=0x70
-    Concatenated DEX file payload
-  kind=kVerifierDepsSection (2) off=0xb0 size=0x1c
-    Verifier dependency section
+  kind=kChecksumSection      (0) off=0x3c  size=0x4
+  kind=kDexFileSection       (1) off=0x40  size=0x70
+  kind=kVerifierDepsSection  (2) off=0xb0  size=0x1c
   kind=kTypeLookupTableSection (3) off=0xcc size=0x0
-    Class descriptor lookup table section
 checksums: 1
   [0]=0xcafebabe
 dex files: 1
-  [0] off=0x40 size=0x70 magic="dex\n" ver="035" endian=little-endian file_size=112 header=112
-     sha1=0000000000000000000000000000000000000000 checksum=0xcafebabe
-     strings=0(@0x0) types=0(@0x0) protos=0(@0x0) fields=0(@0x0) methods=0(@0x0) class_defs=3(@0x0)
+  [0] off=0x40 size=0x70 magic="dex\n" ver="035" endian=little-endian file_size=112
+       sha1=0000000000000000000000000000000000000000
+       strings=0 types=0 protos=0 fields=0 methods=0 class_defs=3
 verifier_deps: off=0xb0 size=0x1c
   [dex 0] verified=2 unverified=1 pairs=1 extra_strings=0
-    class 0: string_5(5) -> string_10(10)
-type_lookup: off=0xcc size=0x0
 byte_coverage: 204/204 bytes (100.0%)
-  0x00000000..0x0000000c      12 bytes  vdex_header
-  0x0000000c..0x0000003c      48 bytes  section_headers
-  0x0000003c..0x00000040       4 bytes  kChecksumSection
-  0x00000040..0x000000b0     112 bytes  kDexFileSection
-  0x000000b0..0x000000cc      28 bytes  kVerifierDepsSection
 ```
 
-### Pipeline: batch scan with summary
+**Batch pipeline:**
 
-```
-$ for f in *.vdex; do vdexcli parse --format summary "$f"; done
-
-status=ok  file=base.vdex  size=524288 version=027 sections=4 checksums=3 dexes=3 warnings=0 errors=0 coverage=100.0% gaps=0
-status=warn file=app.vdex   size=204    version=027 sections=4 checksums=1 dexes=1 warnings=2 errors=0 coverage=100.0% gaps=0
+```bash
+for f in *.vdex; do vdexcli parse --format summary "$f"; done
+# status=ok file=base.vdex size=524288 version=027 coverage=100.0% gaps=0
 ```
 
-### Pipeline: find non-empty sections with awk
+---
 
-```
-$ vdexcli parse --format sections app.vdex | awk -F'\t' 'NR>1 && $4>0 {printf "%-30s %s bytes\n", $2, $4}'
+### explain
 
-kChecksumSection               4 bytes
-kDexFileSection                112 bytes
-kVerifierDepsSection           28 bytes
-```
+Map every byte of the VDEX file to a named, typed, annotated primitive field.
+All bytes are accounted for — including padding and gaps.
 
-### Pipeline: coverage check
-
-```
-$ vdexcli parse --format coverage app.vdex
-
-file=app.vdex size=204 parsed=204 unparsed=0 coverage=100.00%
-  0x00000000      12  vdex_header
-  0x0000000c      48  section_headers
-  0x0000003c       4  kChecksumSection
-  0x00000040     112  kDexFileSection
-  0x000000b0      28  kVerifierDepsSection
+```bash
+vdexcli explain app.vdex                    # hex-dump table (text)
+vdexcli explain --format json app.vdex      # full PrimitiveMap as JSON
+vdexcli explain --offset 0x3c app.vdex      # field at specific byte offset
+vdexcli explain --offset 60 app.vdex        # decimal offset also supported
+vdexcli explain --offset 0x3c --json app.vdex  # single field as JSON
 ```
 
-### Extracting DEX files
+**DEX table decomposition** — each DEX embedded in the VDEX is decomposed into its constituent tables:
 
 ```
-$ vdexcli extract-dex app.vdex ./dex-out/
-extracted 1 dex files to ./dex-out/
-
-$ ls ./dex-out/
-app.vdex_0_3405691582.dex
+vdex.dex[0].string_ids[0].offset     → uint32_le  0x00000070
+vdex.dex[0].type_ids[0]              → uint32_le  0x00000005
+vdex.dex[0].proto_ids[0].shorty_idx  → uint32_le  0x00000001
+vdex.dex[0].field_ids[0].class_idx   → uint16_le  0x0000
+...
 ```
 
-### Modifying verifier deps (dry run)
+---
 
+### extract-dex
+
+Extract all embedded DEX files from a VDEX container.
+
+```bash
+vdexcli extract-dex app.vdex ./dex-out/
+vdexcli extract-dex --json app.vdex ./out/
+vdexcli extract-dex --extract-name-template "{base}_{index}_{checksum_hex}.dex" app.vdex ./out/
+vdexcli extract-dex --extract-continue-on-error app.vdex ./out/
 ```
-$ cat patch.json
-{"dexes":[{"dex_index":0,"classes":[
-  {"class_index":0,"verified":false},
-  {"class_index":1,"verified":false},
-  {"class_index":2,"verified":false}]}]}
 
-$ vdexcli modify --dry-run --verifier-json patch.json app.vdex out.vdex
-modify summary: mode=replace patch_dexes=1 patch_classes=3 patch_extra_strings=0
-modify diff: classes=3 modified=2 unchanged=1 change=66.67%
-modify changed dexes: [0]
-modify changed class samples: dex=0 classes=[0 2]
-modify status: ok
-verifier section size: old=28 new=24 delta=-4
-modify output: dry-run (no file written)
+Template tokens: `{base}`, `{index}`, `{checksum}`, `{checksum_hex}`, `{offset}`, `{size}`
 
-$ vdexcli modify --dry-run --format json --verifier-json patch.json app.vdex out.vdex \
-    | jq '{status, modified_classes, class_change_percent}'
+---
+
+### modify
+
+Patch the verifier-deps section via a JSON descriptor.
+
+```bash
+# Replace mode (default) — rebuild entire verifier section
+vdexcli modify --verifier-json patch.json in.vdex out.vdex
+
+# Merge mode — overlay on top of existing data
+vdexcli modify --mode merge --verifier-json patch.json in.vdex out.vdex
+
+# Dry run — validate patch without writing output
+vdexcli modify --dry-run --json --verifier-json patch.json in.vdex out.vdex
+
+# Read patch from stdin
+cat patch.json | vdexcli modify --verifier-json - in.vdex out.vdex
+```
+
+**Patch JSON schema:**
+
+```json
 {
-  "status": "ok",
-  "modified_classes": 2,
-  "class_change_percent": 66.66666666666666
+  "mode": "replace",
+  "dexes": [{
+    "dex_index": 0,
+    "extra_strings": ["Ljava/lang/Object;"],
+    "classes": [
+      {"class_index": 0, "verified": true,  "pairs": [{"dest": 5, "src": 10}]},
+      {"class_index": 1, "verified": false}
+    ]
+  }]
 }
 ```
 
-### Table format with color
+See [`samples/`](samples/) for example patch files.
 
-```
-$ vdexcli parse --format table --color never app.vdex
+---
 
-VDEX vdex  v027  204 bytes
+### diff
 
-  KIND  NAME                              OFFSET        SIZE
-  ----  ----------------------------  ----------  ----------
-     0  kChecksumSection                    0x3c           4
-     1  kDexFileSection                     0x40         112
-     2  kVerifierDepsSection                0xb0          28
-     3  kTypeLookupTableSection             0xcc           0
+Structurally compare two VDEX files. Exit code: `0` = identical, `1` = different.
 
-checksums: 1
-  [0] 0xcafebabe
-
-dex files: 1
-  [0] dex\n035 off=0x40 size=112 endian=little-endian sha1=00000000000000000000...
-       strings=0 types=0 protos=0 fields=0 methods=0 class_defs=3
-
-verifier_deps: off=0xb0 size=28
-  [dex 0] verified=2 unverified=1 pairs=1 extras=0
-
-coverage: 204/204 bytes (100.0%)
-
-warnings: 2
-  ! section kind 3 has zero size
-  ! type-lookup section truncated before dex 0
+```bash
+vdexcli diff before.vdex after.vdex           # text with color
+vdexcli diff --json before.vdex after.vdex    # JSON diff
+vdexcli diff --format summary a.vdex b.vdex   # CI-friendly one-liner
 ```
 
-When output is a terminal, fields are color-coded: green for verified, yellow for warnings, red for errors. Use `--color always` to force colors in pipes.
-
-### Comparing two VDEX files
+**Example:**
 
 ```
-$ vdexcli diff original.vdex modified.vdex
-
 VDEX diff
-  A: original.vdex (204 bytes)
-  B: modified.vdex (204 bytes)
+  A: before.vdex (204 bytes)
+  B: after.vdex  (204 bytes)
 
 verifier_deps: (2 classes changed)
   [dex 0] verified 2→0 (-2)  pairs 1→0 (-1)  extras 0→0
 
 summary: sections=0 checksums=0 dexes=0 verifier=2 typelookup=0
+```
 
-$ vdexcli diff --format json original.vdex modified.vdex | jq '.summary'
-{
-  "identical": false,
-  "sections_changed": 0,
-  "checksums_changed": 0,
-  "dex_files_changed": 0,
-  "verifier_classes_changed": 2,
-  "type_lookup_entries_changed": 0
+---
+
+### dump
+
+Print the field-meaning dictionary embedded in the binary.
+
+```bash
+vdexcli dump                      # YAML meanings
+vdexcli dump --format jsonl       # JSON for piping
+```
+
+---
+
+## Global Flags
+
+| Flag | Description |
+|------|-------------|
+| `-i, --in <path>` | Input VDEX path (alternative to positional argument) |
+| `--format <mode>` | `text` \| `json` \| `jsonl` \| `summary` \| `sections` \| `coverage` \| `table` |
+| `--json` | Shorthand for `--format json` |
+| `--color <mode>` | `auto` (default) \| `always` \| `never` |
+| `--strict` | Treat matched warnings as fatal (non-zero exit) |
+| `--strict-warn <patterns>` | Comma-separated filters; prefix `re:` for regex |
+| `--show-meaning` | Include field descriptions (default: `true`) |
+| `--extract-dex <dir>` | Extract DEX files during parse |
+| `--extract-name-template` | Filename template (default: `{base}_{index}_{checksum}.dex`) |
+| `--extract-continue-on-error` | Skip failures and continue extracting |
+| `-v, --version` | Print version and exit |
+
+---
+
+## Go Library API
+
+`vdexcli` exposes a stable public API in [`pkg/vdex`](pkg/vdex/) that other Go projects can import directly.
+
+```go
+import "github.com/0xc0de1ab/vdexcli/pkg/vdex"
+```
+
+### Core functions
+
+```go
+// Byte-level annotated field map — every byte is accounted for.
+// WASM-compatible (no filesystem access).
+fm, err := vdex.ExplainBytes(data []byte) (*vdex.FieldMap, error)
+
+// High-level structural report.
+// WASM-compatible.
+report, err := vdex.ParseBytes(data []byte, opts ...vdex.Option) (*vdex.Report, error)
+
+// Convenience wrappers for non-WASM (desktop/server) builds.
+fm, err     := vdex.ExplainFile(path string) (*vdex.FieldMap, error)
+report, err := vdex.ParseFile(path string, opts ...vdex.Option) (*vdex.Report, error)
+```
+
+### Options
+
+```go
+vdex.WithMeanings()   // include human-readable field descriptions
+vdex.WithDexPreview() // include DEX class preview in report
+```
+
+### Types
+
+```go
+// Field — a single annotated byte range.
+type Field struct {
+    Offset      uint32
+    Size        uint32
+    Type        FieldType     // "uint32_le", "magic", "bytes", "padding", ...
+    RawBytes    []byte
+    ParsedValue interface{}
+    LogicalPath string        // e.g. "vdex.dex[0].string_ids[3].offset"
+    Summary     string
+    Description string
+}
+
+// FieldMap — complete annotated view of the VDEX file.
+type FieldMap struct {
+    Fields       []*Field
+    TotalBytes   uint32
+    UnmappedGaps []ByteRange
+}
+
+// Report — high-level parsed result.
+type Report struct {
+    File         string
+    Header       *VdexHeader
+    Sections     []SectionHeader
+    Checksums    []uint32
+    DexFiles     []DexInfo
+    VerifierDeps *VerifierDepsInfo
+    TypeLookup   *TypeLookupInfo
+    Coverage     *CoverageReport
+    Diagnostics  []Diagnostic
 }
 ```
 
-### Strict mode
+### Example
 
+```go
+package main
+
+import (
+    "fmt"
+    "os"
+
+    "github.com/0xc0de1ab/vdexcli/pkg/vdex"
+)
+
+func main() {
+    data, _ := os.ReadFile("app.vdex")
+
+    // Byte-level explain
+    fm, err := vdex.ExplainBytes(data)
+    if err != nil {
+        panic(err)
+    }
+    fmt.Printf("Total bytes: %d, Fields: %d\n", fm.TotalBytes, len(fm.Fields))
+    for _, f := range fm.Fields[:5] {
+        fmt.Printf("0x%08x  %-12s  %s\n", f.Offset, f.Type, f.LogicalPath)
+    }
+
+    // High-level parse
+    report, _ := vdex.ParseBytes(data, vdex.WithMeanings())
+    fmt.Printf("VDEX version: %d, DEX count: %d\n",
+        report.Header.Version, report.Header.DexCount)
+}
 ```
-# Passes: no warnings match the pattern
-$ vdexcli parse --strict --strict-warn "checksum" --format summary app.vdex
-status=warn file=app.vdex size=204 version=027 ... coverage=100.0% gaps=0
-$ echo $?
-0
 
-# Fails: all warnings matched (no --strict-warn filter = match all)
-$ vdexcli parse --strict --format summary app.vdex
-strict mode: 2 matching warning(s): [section kind 3 has zero size type-lookup section truncated before dex 0]
-$ echo $?
-1
+---
+
+## WebAssembly Engine
+
+The `wasm/` package compiles the full engine to WebAssembly using the standard Go toolchain (`GOOS=js GOARCH=wasm`). No TinyGo or code-gen hacks required.
+
+### Build
+
+```bash
+GOOS=js GOARCH=wasm go build \
+  -trimpath -ldflags="-s -w" \
+  -o vdex.wasm ./wasm/
+
+# Or via Makefile:
+make demo
 ```
 
-### Diagnostics with actionable hints
+Output: `vdex.wasm` (~3.3 MB stripped)
 
-Every warning and error includes a diagnostic code and a hint explaining what went wrong and what to do next. Warnings use `!` (yellow), hints use `~` (dim).
+### JavaScript API
+
+```js
+// Load runtime + WASM
+const go = new Go();  // from wasm_exec.js
+const result = await WebAssembly.instantiateStreaming(fetch("vdex.wasm"), go.importObject);
+go.run(result.instance);
+
+// Analyze a VDEX file (FileReader → Uint8Array → WASM)
+const bytes = new Uint8Array(await file.arrayBuffer());
+
+// Byte-level field map → { fields: [...], total_bytes: N, unmapped_gaps: [...] }
+const fieldMap = window.vdex.explain(bytes);
+
+// High-level structural report → { header: {...}, dex_files: [...], ... }
+const report = window.vdex.parse(bytes);
+
+// Engine version string
+console.log(window.vdex.version);  // "v0.1.0"
+```
+
+### WASM bridge functions
+
+| Function | Input | Output |
+|----------|-------|--------|
+| `window.vdex.explain(Uint8Array)` | Raw VDEX bytes | `{ fields, total_bytes, unmapped_gaps }` or `{ error }` |
+| `window.vdex.parse(Uint8Array)` | Raw VDEX bytes | `VdexReport` object or `{ error }` |
+| `window.vdex.version` | — | Version string |
+
+Both functions are **synchronous** — no `async/await` needed on the JS side.
+
+---
+
+## Browser Demo
+
+A fully client-side VDEX analyzer is included in `demo/`. No server required — the engine runs entirely inside the browser via WebAssembly.
+
+### Run locally
+
+```bash
+# 1. Build the WASM binary and copy wasm_exec.js
+make demo
+# or: bash demo/build_demo.sh
+
+# 2. Serve (any static file server works)
+make demo-serve
+# → http://localhost:8080
+
+# Manual alternative:
+cd demo && python3 -m http.server 8080
+```
+
+### Features
+
+- **Drag-and-drop** or **file picker** to load any `.vdex` file
+- **Explain tab** — complete byte-level field table with:
+  - Offset, size, type badge, logical path, decoded value, hex preview
+  - Filterable by path prefix and field type
+  - Padding toggle, JSON copy button
+  - Click any row for a full detail modal with complete hex dump
+- **Parse tab** — high-level structural summary cards (header, sections, DEX files, verifier deps, coverage)
+- **Coverage bar** — animated byte coverage indicator
+- **100% client-side** — no file uploads, no analytics, no dependencies
+
+> **Note:** Browsers require a proper HTTP server for WASM (`fetch` + `Content-Type: application/wasm`). Opening `index.html` directly via `file://` will not work.
+
+---
+
+## Diagnostics
+
+Every warning and error carries a structured diagnostic with `severity`, `code`, `message`, and `hint`.
 
 **Text output:**
 
 ```
-$ vdexcli parse old-android10.vdex
-
 section warnings (1):
   ! section kDexFileSection has zero size
     ~ this section is empty; normal for DM-format VDEX (no embedded DEX)
 verifier warnings (1):
   ! dex 0: inferred class_def_count=246 from verifier section (DM format)
-    ~ no embedded DEX; class count inferred from offset table heuristic — verify against source APK
+    ~ no embedded DEX; class count inferred from offset table heuristic
 ```
 
-**JSON output** — each diagnostic has `severity`, `code`, `message`, `hint`:
+**JSON output:**
 
-```
-$ vdexcli parse --json old-android10.vdex | jq '.diagnostics[0]'
+```json
 {
   "severity": "warning",
   "category": "section",
@@ -273,304 +507,164 @@ $ vdexcli parse --json old-android10.vdex | jq '.diagnostics[0]'
 }
 ```
 
-Severity values: `"error"` (fatal) or `"warning"` (parsing continues). Codes prefixed `ERR_` are errors, `WARN_` are warnings.
+**34 diagnostic codes** covering: truncated files, invalid magic, corrupted sections, broken LEB128, legacy version guards, type-lookup failures, and more.
 
-34 diagnostic codes cover every parser failure mode — truncated files, invalid magic, corrupted sections, broken LEB128, and more. Each code maps to an actionable hint so you know whether to re-extract, check your input, or safely ignore. See [`internal/model/errors.go`](internal/model/errors.go) for the full code list.
-
-**CI integration** — filter diagnostics by code in pipelines:
+**CI integration:**
 
 ```bash
-# Fail CI only on checksum/verifier warnings, ignore section zero-size
+# Fail only on checksum/verifier issues; ignore structural warnings
 vdexcli parse --strict --strict-warn "re:(checksum|verifier)" app.vdex
 
-# Extract specific diagnostic codes from JSON
-vdexcli parse --json app.vdex | jq '[.diagnostics[] | select(.code | startswith("ERR_"))]'
+# Extract all errors from JSON output
+vdexcli parse --json app.vdex | jq '[.diagnostics[] | select(.severity == 0)]'
 
-# Batch scan: flag files with errors
+# Batch scan
 for f in *.vdex; do
   errs=$(vdexcli parse --json "$f" | jq '[.diagnostics[] | select(.severity==0)] | length')
   [ "$errs" -gt 0 ] && echo "FAIL $f ($errs errors)"
 done
 ```
 
-### Error handling
-
-```
-$ vdexcli parse broken.vdex
-errors (1):
-  ! file too small for VDEX header: 11 bytes (need >= 12)
-    ~ verify the file is a complete VDEX and not truncated during copy
-
-$ vdexcli parse nonexistent.vdex
-open nonexistent.vdex: no such file or directory
-
-$ vdexcli parse
-input vdex path is required (pass as argument or use --in)
-
-$ vdexcli modify in.vdex out.vdex
---verifier-json is required
-
-$ vdexcli modify --mode bogus --verifier-json p.json in.vdex out.vdex
-unsupported --mode "bogus"; supported: replace, merge
-```
+---
 
 ## Install
+
+### Via `go install` (recommended)
 
 ```bash
 go install github.com/0xc0de1ab/vdexcli@latest
 ```
 
-Or build from source:
+### Build from source
 
 ```bash
 git clone https://github.com/0xc0de1ab/vdexcli.git
 cd vdexcli
-make build          # release binary in build/<os>-<arch>/release/
+make build          # → build/<os>-<arch>/release/vdexcli
 ```
 
-Available Make targets: `make all`, `make build`, `make test`, `make lint`, `make fmt`, `make vet`, `make clean`, `make cross-build`
+Available Make targets:
 
-Or download a prebuilt binary from [GitHub Releases](https://github.com/0xc0de1ab/vdexcli/releases/latest) and verify the checksum:
+| Target | Description |
+|--------|-------------|
+| `make all` | fmt + vet + lint + test + build |
+| `make build` | Release binary for current OS/arch |
+| `make test` | Run full test suite |
+| `make lint` | golangci-lint |
+| `make fmt` | gofmt in-place |
+| `make vet` | go vet + mod tidy check |
+| `make demo` | Build WASM demo artifacts |
+| `make demo-serve` | Build demo and serve at `localhost:8080` |
+| `make clean` | Remove build artifacts |
+
+### Prebuilt binaries
+
+Download from [GitHub Releases](https://github.com/0xc0de1ab/vdexcli/releases/latest):
 
 ```bash
+# Verify checksum
 sha256sum -c vdexcli-checksums.txt
 ```
 
-Debug build: `make build VARIANT=debug`
+Available platforms: `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64`, `windows/amd64`
 
-## Commands
-
-### parse
+### Debug build
 
 ```bash
-vdexcli parse app.vdex                    # text output (default)
-vdexcli parse --json app.vdex             # JSON output
-vdexcli parse --format jsonl app.vdex     # single-line JSON for log pipelines
-vdexcli parse --format summary app.vdex   # one-line key=value for CI
-vdexcli parse --format sections app.vdex  # TSV section table for awk/grep
-vdexcli parse --format coverage app.vdex  # byte coverage only
-vdexcli parse --format table app.vdex     # aligned table with color
-vdexcli parse --extract-dex ./out app.vdex # extract DEX during parse
-vdexcli parse --strict --strict-warn "re:(checksum|version)" app.vdex
+make build VARIANT=debug
 ```
 
-**Output includes:**
-- VDEX header (magic, version, section count)
-- Section table with offsets/sizes for all 4 section types
-- Per-DEX header fields (magic, version, SHA-1, all size/offset fields, class preview)
-- Verifier dependencies (verified/unverified counts, assignability pairs, extra strings)
-- Type lookup table statistics (bucket count, entries, chain lengths)
-- Byte coverage report with gap detection
-
-### extract-dex
-
-```bash
-vdexcli extract-dex app.vdex ./dex-output/
-vdexcli extract-dex --json app.vdex ./out/
-vdexcli extract-dex --extract-name-template "{base}_{index}_{checksum_hex}.dex" app.vdex ./out/
-vdexcli extract-dex --extract-continue-on-error app.vdex ./out/
-```
-
-Tokens: `{base}`, `{index}`, `{checksum}`, `{checksum_hex}`, `{offset}`, `{size}`
-
-### modify
-
-```bash
-# Replace mode (default) — rebuild entire verifier section
-vdexcli modify --verifier-json patch.json input.vdex output.vdex
-
-# Merge mode — overlay onto existing data
-vdexcli modify --mode merge --verifier-json patch.json in.vdex out.vdex
-
-# Dry run — validate without writing
-vdexcli modify --dry-run --json --verifier-json patch.json in.vdex out.vdex
-
-# Stdin + logging
-cat patch.json | vdexcli modify --verifier-json - --log-file modify.log in.vdex out.vdex
-```
-
-**Patch JSON format:**
-
-```json
-{
-  "mode": "replace",
-  "dexes": [{
-    "dex_index": 0,
-    "extra_strings": ["Ljava/lang/Object;"],
-    "classes": [
-      {"class_index": 0, "verified": true, "pairs": [{"dest": 5, "src": 10}]},
-      {"class_index": 1, "verified": false}
-    ]
-  }]
-}
-```
-
-Sample patches: [`samples/`](samples/)
-
-### explain
-
-```bash
-vdexcli explain app.vdex                        # text table (default)
-vdexcli explain --format json app.vdex          # JSON PrimitiveMap
-vdexcli explain --offset 0x3c app.vdex          # query field at byte offset 0x3c
-vdexcli explain --offset 60 app.vdex            # decimal offset also supported
-vdexcli explain --offset 0x3c --json app.vdex   # single-field JSON
-```
-
-Maps every byte of the VDEX to a named primitive field, showing offset, hex dump, type, and decoded value.
-
-**Key flags:**
-- `--offset <hex|dec>` — Query the field covering this byte offset (exit 1 if not found)
-- `--format text|json` — Output format (`text` table or `json` full PrimitiveMap)
-- `--json` — Shorthand for `--format json`
-
-**Output includes:**
-- Aligned hex-dump table with ANSI color coding per type
-- Coverage summary: `N/M bytes (P%) — all bytes explained` or gap details
-- `--offset` mode: full field detail view (offset, size, type, raw bytes, decoded value)
-
-### dump
-
-```bash
-$ vdexcli dump | head -8
-meanings:
-  vdex_file:
-    magic: Vdex header magic (must be 'vdex')
-    version: Vdex format version, currently '027' expected
-    sections: Section table entries for checksum, dex, verifier_deps, type_lookup
-    checksums: Concatenated checksum array, one entry per embedded dex
-    dex_files: Parsed DEX payload metadata and preview classes
-    verifier_deps: Verifier dependency section summary per dex
-```
-
-### diff
-
-```bash
-vdexcli diff before.vdex after.vdex              # text with color
-vdexcli diff --json before.vdex after.vdex        # full JSON diff
-vdexcli diff --format summary before.vdex after.vdex  # one-line for CI
-vdexcli diff --format jsonl before.vdex after.vdex    # single-line JSON for logs
-```
-
-Exit code: 0 if identical, 1 if different.
-
-**Compares:** header, section sizes, checksums, DEX files, verifier classes/pairs, type-lookup entries.
-
-**Example — files differ:**
-
-```
-$ vdexcli diff original.vdex modified.vdex
-
-VDEX diff
-  A: original.vdex (204 bytes)
-  B: modified.vdex (204 bytes)
-
-verifier_deps: (2 classes changed)
-  [dex 0] verified 2→0 (-2)  pairs 1→0 (-1)  extras 0→0
-
-summary: sections=0 checksums=0 dexes=0 verifier=2 typelookup=0
-```
-
-**Example — CI gate with summary:**
-
-```
-$ vdexcli diff --format summary original.vdex modified.vdex
-status=different size_a=204 size_b=204 sections=0 checksums=0 dexes=0 verifier=2 typelookup=0
-$ echo $?
-1
-
-$ vdexcli diff --format summary same.vdex same.vdex
-status=identical size_a=204 size_b=204 sections=0 checksums=0 dexes=0 verifier=0 typelookup=0
-$ echo $?
-0
-```
-
-## Global Flags
-
-| Flag | Description |
-|------|-------------|
-| `-i, --in <path>` | Input vdex path (alternative to positional argument) |
-| `--format <mode>` | Output format: `text`, `json`, `jsonl`, `summary`, `sections`, `coverage`, `table` |
-| `--json` | Shorthand for `--format json` |
-| `--color <mode>` | Color output: `auto` (default), `always`, `never` |
-| `--strict` | Treat matched warnings as fatal errors (non-zero exit) |
-| `--strict-warn <patterns>` | Comma-separated warning filters; prefix `re:` for regex |
-| `--show-meaning` | Include field descriptions in output (default: `true`) |
-| `--extract-dex <dir>` | Extract DEX files during parse |
-| `--extract-name-template` | Filename template (default: `{base}_{index}_{checksum}.dex`) |
-| `--extract-continue-on-error` | Skip failures and continue extracting |
-| `-v, --version` | Print version and exit |
-
-**Output formats:**
-- **text** — Human-readable full dump (default)
-- **json** — Pretty-printed JSON, suitable for `jq`
-- **jsonl** — Compact single-line JSON for log pipelines
-- **summary** — One-line `key=value` for CI gates and monitoring
-- **sections** — TSV table of section headers for `grep`/`awk`
-- **coverage** — Byte coverage report only
-- **table** — Aligned columns with ANSI colors (auto-detected terminal)
-
-## Modify Flags
-
-| Flag | Description |
-|------|-------------|
-| `--verifier-json <path>` | Path to verifier patch JSON (`-` for stdin) |
-| `--mode <replace\|merge>` | Patch mode (default: `replace`) |
-| `--dry-run` | Validate without writing output |
-| `--verify` | Alias for `--dry-run` |
-| `--quiet` | Suppress text-mode summary |
-| `--force` | Allow output path equal to input |
-| `--log-file <path>` | Append result as NDJSON |
-
-## VDEX v027 Format
-
-Based on the AOSP ART runtime ([`runtime/vdex_file.h`](https://android.googlesource.com/platform/art/+/refs/heads/main/runtime/vdex_file.h)):
-
-```
-Offset  Size    Description
-------  ------  ----------------------------------------
-0x00    12      VdexFileHeader: magic("vdex") + version("027\0") + num_sections(u32)
-0x0C    N*12    VdexSectionHeader[N]: kind + offset + size (N = 4)
-
-Section 0: kChecksumSection        uint32[D] per-DEX checksums
-Section 1: kDexFileSection         Concatenated DEX files (empty in DM format)
-Section 2: kVerifierDepsSection    Per-DEX verification dependency data
-Section 3: kTypeLookupTableSection Per-DEX class descriptor hash tables
-```
-
-See [`docs/vdex-format.md`](docs/vdex-format.md) for detailed field descriptions.
+---
 
 ## Project Structure
 
 ```
 vdexcli/
 ├── main.go                          # Entry point (7 lines)
-├── Makefile                         # Build targets (all/build/test/lint/clean)
-├── cmd/                             # Cobra command layer
-│   ├── root.go                      # Root command + global flags + --color
-│   ├── parse.go                     # parse subcommand + extract flags
-│   ├── explain.go                   # explain subcommand (byte-level field map)
+├── Makefile                         # Build, test, demo targets
+├── cmd/                             # Cobra CLI commands
+│   ├── root.go                      # Root command + global flags
+│   ├── parse.go                     # parse subcommand
+│   ├── explain.go                   # explain subcommand
 │   ├── extract.go                   # extract-dex subcommand
-│   ├── modify.go                    # modify subcommand (11-step pipeline)
+│   ├── modify.go                    # modify subcommand
+│   ├── diff.go                      # diff subcommand
 │   ├── dump.go                      # dump subcommand
 │   └── version.go                   # version subcommand
+├── pkg/
+│   └── vdex/                        # ★ Public Go library API
+│       ├── api.go                   # ExplainBytes, ParseBytes
+│       ├── api_fs.go                # ExplainFile, ParseFile (non-WASM)
+│       ├── types.go                 # Field, FieldMap, Report, ...
+│       ├── options.go               # WithMeanings, WithDexPreview
+│       └── doc.go                   # Package documentation
+├── wasm/
+│   └── main.go                      # ★ WebAssembly entry point (syscall/js)
+├── demo/                            # ★ Browser-based VDEX analyzer
+│   ├── index.html                   # Single-page app
+│   ├── style.css                    # Dark glassmorphism UI
+│   ├── script.js                    # FileReader → WASM bridge + renderer
+│   └── build_demo.sh                # Build WASM + copy wasm_exec.js
 ├── internal/
 │   ├── binutil/                     # Low-level binary I/O (ReadU32, LEB128, ...)
-│   ├── model/                       # Shared types, constants, diagnostics (5 files)
-│   ├── dex/                         # DEX format parsing (4 files, VDEX-independent)
-│   ├── parser/                      # VDEX container parsing (7 files)
+│   ├── model/                       # Shared types, constants, diagnostics
+│   ├── dex/                         # DEX format parsing (VDEX-independent)
+│   ├── parser/                      # VDEX container parsing
+│   │   ├── explain.go               # ExplainVdexBytes — byte-level field map
+│   │   ├── explain_dex.go           # DEX table decomposition
+│   │   ├── parser.go                # ParseVdexBytes — structural report
+│   │   ├── verifier.go              # VerifierDeps parsing
+│   │   ├── typelookup.go            # TypeLookup table parsing
+│   │   └── legacy.go                # Legacy VDEX v021-v026 support
 │   ├── modifier/                    # Verifier section build/patch/compare
-│   ├── extractor/                   # DEX file extraction (interface-driven)
-│   └── presenter/                   # Output formatting + ANSI color (3 files)
-├── .github/workflows/               # CI, release, integration test workflows
-├── samples/                         # Example verifier patch JSON files
-├── scripts/                         # Log analysis utilities
-├── testdata/                        # Real VDEX files for integration tests
+│   ├── extractor/                   # DEX file extraction
+│   └── presenter/                   # Output formatting + ANSI color
+│       ├── color_terminal.go        # Terminal color support (!js build)
+│       └── color_wasm.go            # No-op overrides for WASM build
+├── .github/
+│   └── workflows/
+│       ├── ci.yml                   # [01] CI Build (7 jobs)
+│       ├── release.yml              # Release pipeline
+│       └── test-integration.yml     # 166-file VDEX integration test
 ├── docs/
-│   ├── architecture.md              # Package diagram, data flow, design decisions
+│   ├── architecture.md              # Package diagram + design decisions
 │   └── vdex-format.md              # VDEX v027 binary format reference
+├── samples/                         # Example verifier patch JSON files
+├── testdata/                        # Real VDEX files for integration tests
 └── ROADMAP.md                       # Phased expansion plan
 ```
+
+---
+
+## CI / Workflows
+
+### `[01] CI Build` — `ci.yml`
+
+Triggers: **push to `main`** and **manual dispatch** (`workflow_dispatch`).
+
+| Job | What it checks |
+|-----|---------------|
+| `fmt` | `gofmt` formatting |
+| `vet` | `go mod tidy` drift · `go mod verify` · `go vet ./...` · `GOOS=js GOARCH=wasm go vet ./wasm/` |
+| `lint` | `golangci-lint` (staticcheck, errcheck, ...) |
+| `vulncheck` | `govulncheck` — CVE scan |
+| `test` | `go test -v -count=1 ./...` · coverage ≥ 85% across all packages including `pkg/vdex/` |
+| `build` | 5-platform matrix (linux/darwin/windows × amd64/arm64) + linux/amd64 smoke test |
+| `build-wasm` | `GOOS=js GOARCH=wasm` build · uploads `vdex.wasm` artifact |
+
+**Manual trigger:** GitHub → Actions → `[01] CI Build` → **Run workflow**
+
+### `Release` — `release.yml`
+
+Triggers: version tag `v*.*.*` or `workflow_dispatch`.
+Produces: per-platform archives + SHA256 checksums + GitHub Release.
+
+### `test-integration.yml`
+
+Triggers: weekly (Monday 00:00 UTC), push to main, `workflow_dispatch`.
+Runs: **166 real Android 16 VDEX files** through the full parser pipeline.
+
+---
 
 ## Testing
 
@@ -580,13 +674,58 @@ go test -v ./...
 make test
 ```
 
-The test suite includes 148 tests across 5 packages:
-- **cmd**: 32 e2e subprocess tests (all commands, 7 formats, error cases) + 3 integration tests (166 real VDEX files)
-- **internal/binutil**: 18 unit tests (100% coverage — LEB128, alignment, encoding round-trips)
-- **internal/parser**: 51 unit tests (header, sections, verifier, typelookup, coverage, meanings, diagnostics)
-- **internal/modifier**: 30 unit tests (patch parsing, validation, builder, failure classification, atomic write)
-- **internal/extractor**: 9 unit tests (mock filesystem, interface verification)
-- Real VDEX integration tests against Android 16 (AOSP `android-16.0.0_r4`)
+| Package | Tests | Notes |
+|---------|-------|-------|
+| `cmd` | 35 | E2E subprocess tests for all commands and formats |
+| `internal/binutil` | 18 | LEB128, alignment, encoding round-trips (100% coverage) |
+| `internal/parser` | 51+ | Header, sections, verifier, typelookup, byte-level explain |
+| `internal/modifier` | 30 | Patch parse/validate/build, atomic write |
+| `internal/extractor` | 9 | Mock filesystem, interface verification |
+| `pkg/vdex` | 14 | Public API stability, option validation, type aliases |
+| **Integration** | 166 | Real Android 16 VDEX files (`android-16.0.0_r4`) |
+
+**Coverage gate:** ≥ 85% across testable packages (enforced in CI).
+
+---
+
+## VDEX v027 Format Reference
+
+Based on AOSP ART [`runtime/vdex_file.h`](https://android.googlesource.com/platform/art/+/refs/heads/main/runtime/vdex_file.h):
+
+```
+Offset   Size   Field
+------   ----   -----
+0x00       4    magic        "vdex"
+0x04       4    version      "027\0"
+0x08       4    num_sections (= 4)
+0x0c    N×12    VdexSectionHeader[N]
+                  ├ kind    uint32  (0=Checksum, 1=Dex, 2=VerifierDeps, 3=TypeLookup)
+                  ├ offset  uint32  section start (absolute)
+                  └ size    uint32  section length in bytes
+
+Section 0  kChecksumSection         uint32[D] — CRC32 per embedded DEX
+Section 1  kDexFileSection          Concatenated DEX payloads (empty in DM format)
+Section 2  kVerifierDepsSection     Per-DEX verification dependency data
+Section 3  kTypeLookupTableSection  Per-DEX class descriptor hash tables
+```
+
+Full field-level reference: [`docs/vdex-format.md`](docs/vdex-format.md)
+
+---
+
+## Performance
+
+Measured on a single core (arm64), single VDEX file:
+
+| File size | Parse time | Throughput |
+|-----------|-----------|------------|
+| 204 B | ~4 ms | instant |
+| 5.6 KB | ~4 ms | instant |
+| 178 KB (28 DEX) | ~13 ms | ~14 MB/s |
+
+Batch: **166 files in 1.4 seconds** (including DM format class inference).
+
+---
 
 ## Contributing
 
