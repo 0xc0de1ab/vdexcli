@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Fira+Mono:wght@400;500;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <title>VDEX Web Viewer</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script src="/wasm_exec.js"></script>
+    <script>
+      if (typeof Go !== 'undefined') {
+        const go = new Go();
+        WebAssembly.instantiateStreaming(fetch("/vdex.wasm"), go.importObject).then((result) => {
+          go.run(result.instance);
+          console.log("WASM module loaded and Go program running");
+        }).catch(err => {
+          console.error("Failed to load WASM module:", err);
+        });
+      }
+    </script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
