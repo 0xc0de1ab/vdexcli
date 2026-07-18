@@ -1636,3 +1636,359 @@ func TestExplainVdex_NonZeroGap_InUnmappedGaps(t *testing.T) {
 			"gap size should be 5 bytes, got %d", g.End-g.Start)
 	}
 }
+
+// Group A: Gap/Padding Classification
+
+func TestExplainVdex_Gap_OneBytePadding(t *testing.T) {
+	header := buildRawHeader("vdex", "027\x00", 4)
+	var sb []byte
+	sb = appendSectionHeader(sb, 0, 0x3c, 4) // checksum
+	sb = appendSectionHeader(sb, 1, 0, 0)
+	sb = appendSectionHeader(sb, 2, 0x40, 0)
+	sb = appendSectionHeader(sb, 3, 0x41, 4)
+	raw := append(header, sb...)
+	raw = append(raw, 0xCA, 0xFE, 0xBA, 0xBE) // checksum at 0x3c
+	raw = append(raw, 0x00) // 1 byte zero padding
+	raw = append(raw, 0x00, 0x00, 0x00, 0x00) // typelookup at 0x41
+	
+	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
+	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
+	pm, err := ExplainVdex(tmpFile)
+	require.NoError(t, err)
+	assert.Empty(t, pm.UnmappedGaps)
+}
+
+func TestExplainVdex_Gap_TwoBytesPadding(t *testing.T) {
+	header := buildRawHeader("vdex", "027\x00", 4)
+	var sb []byte
+	sb = appendSectionHeader(sb, 0, 0x3c, 4)
+	sb = appendSectionHeader(sb, 1, 0, 0)
+	sb = appendSectionHeader(sb, 2, 0x40, 0)
+	sb = appendSectionHeader(sb, 3, 0x42, 4)
+	raw := append(header, sb...)
+	raw = append(raw, 0xCA, 0xFE, 0xBA, 0xBE)
+	raw = append(raw, 0x00, 0x00) // 2 bytes zero padding
+	raw = append(raw, 0x00, 0x00, 0x00, 0x00)
+	
+	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
+	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
+	pm, err := ExplainVdex(tmpFile)
+	require.NoError(t, err)
+	assert.Empty(t, pm.UnmappedGaps)
+}
+
+func TestExplainVdex_Gap_ThreeBytesPadding(t *testing.T) {
+	header := buildRawHeader("vdex", "027\x00", 4)
+	var sb []byte
+	sb = appendSectionHeader(sb, 0, 0x3c, 4)
+	sb = appendSectionHeader(sb, 1, 0, 0)
+	sb = appendSectionHeader(sb, 2, 0x40, 0)
+	sb = appendSectionHeader(sb, 3, 0x43, 4)
+	raw := append(header, sb...)
+	raw = append(raw, 0xCA, 0xFE, 0xBA, 0xBE)
+	raw = append(raw, 0x00, 0x00, 0x00)
+	raw = append(raw, 0x00, 0x00, 0x00, 0x00)
+	
+	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
+	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
+	pm, err := ExplainVdex(tmpFile)
+	require.NoError(t, err)
+	assert.Empty(t, pm.UnmappedGaps)
+}
+
+func TestExplainVdex_Gap_NonZeroPadding(t *testing.T) {
+	header := buildRawHeader("vdex", "027\x00", 4)
+	var sb []byte
+	sb = appendSectionHeader(sb, 0, 0x3c, 4)
+	sb = appendSectionHeader(sb, 1, 0, 0)
+	sb = appendSectionHeader(sb, 2, 0x40, 0)
+	sb = appendSectionHeader(sb, 3, 0x42, 4)
+	raw := append(header, sb...)
+	raw = append(raw, 0xCA, 0xFE, 0xBA, 0xBE)
+	raw = append(raw, 0xFF, 0xFF) // 2 bytes NON-ZERO padding
+	raw = append(raw, 0x00, 0x00, 0x00, 0x00)
+	
+	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
+	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
+	pm, err := ExplainVdex(tmpFile)
+	require.NoError(t, err)
+	require.Len(t, pm.UnmappedGaps, 1)
+	assert.Equal(t, uint32(0x40), pm.UnmappedGaps[0].Start)
+	assert.Equal(t, uint32(0x42), pm.UnmappedGaps[0].End)
+}
+
+func TestExplainVdex_Gap_FourByteZeroPadding(t *testing.T) {
+	header := buildRawHeader("vdex", "027\x00", 4)
+	var sb []byte
+	sb = appendSectionHeader(sb, 0, 0x3c, 4)
+	sb = appendSectionHeader(sb, 1, 0, 0)
+	sb = appendSectionHeader(sb, 2, 0x40, 0)
+	sb = appendSectionHeader(sb, 3, 0x44, 4)
+	raw := append(header, sb...)
+	raw = append(raw, 0xCA, 0xFE, 0xBA, 0xBE)
+	raw = append(raw, 0x00, 0x00, 0x00, 0x00) // 4 bytes zero padding -> >3 threshold
+	raw = append(raw, 0x00, 0x00, 0x00, 0x00)
+	
+	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
+	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
+	pm, err := ExplainVdex(tmpFile)
+	require.NoError(t, err)
+	require.Len(t, pm.UnmappedGaps, 1)
+	assert.Equal(t, uint32(0x40), pm.UnmappedGaps[0].Start)
+	assert.Equal(t, uint32(0x44), pm.UnmappedGaps[0].End)
+}
+
+func TestExplainVdex_Gap_TrailingOneByteZero(t *testing.T) {
+	header := buildRawHeader("vdex", "027\x00", 4)
+	var sb []byte
+	sb = appendSectionHeader(sb, 0, 0x3c, 4)
+	sb = appendSectionHeader(sb, 1, 0, 0)
+	sb = appendSectionHeader(sb, 2, 0x40, 0)
+	sb = appendSectionHeader(sb, 3, 0x40, 4)
+	raw := append(header, sb...)
+	raw = append(raw, 0xCA, 0xFE, 0xBA, 0xBE)
+	raw = append(raw, 0x00, 0x00, 0x00, 0x00)
+	raw = append(raw, 0x00) // 1 byte trailing padding
+	
+	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
+	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
+	pm, err := ExplainVdex(tmpFile)
+	require.NoError(t, err)
+	assert.Empty(t, pm.UnmappedGaps)
+}
+
+func TestExplainVdex_Gap_TrailingFiveNonZero(t *testing.T) {
+	header := buildRawHeader("vdex", "027\x00", 4)
+	var sb []byte
+	sb = appendSectionHeader(sb, 0, 0x3c, 4)
+	sb = appendSectionHeader(sb, 1, 0, 0)
+	sb = appendSectionHeader(sb, 2, 0x40, 0)
+	sb = appendSectionHeader(sb, 3, 0x40, 4)
+	raw := append(header, sb...)
+	raw = append(raw, 0xCA, 0xFE, 0xBA, 0xBE)
+	raw = append(raw, 0x00, 0x00, 0x00, 0x00)
+	raw = append(raw, 0x1, 0x2, 0x3, 0x4, 0x5)
+	
+	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
+	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
+	pm, err := ExplainVdex(tmpFile)
+	require.NoError(t, err)
+	require.Len(t, pm.UnmappedGaps, 1)
+	assert.Equal(t, uint32(0x44), pm.UnmappedGaps[0].Start)
+	assert.Equal(t, uint32(0x49), pm.UnmappedGaps[0].End)
+}
+
+func TestExplainVdex_Gap_SectionsTouching(t *testing.T) {
+	header := buildRawHeader("vdex", "027\x00", 4)
+	var sb []byte
+	sb = appendSectionHeader(sb, 0, 0x3c, 4)
+	sb = appendSectionHeader(sb, 1, 0, 0)
+	sb = appendSectionHeader(sb, 2, 0x40, 0)
+	sb = appendSectionHeader(sb, 3, 0x40, 4)
+	raw := append(header, sb...)
+	raw = append(raw, 0xCA, 0xFE, 0xBA, 0xBE)
+	raw = append(raw, 0x00, 0x00, 0x00, 0x00)
+	
+	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
+	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
+	pm, err := ExplainVdex(tmpFile)
+	require.NoError(t, err)
+	assert.Empty(t, pm.UnmappedGaps)
+	for _, f := range pm.Fields {
+		assert.NotEqual(t, model.TypePadding, f.Type)
+	}
+}
+
+func TestExplainVdex_Gap_OverlapSkipped(t *testing.T) {
+	header := buildRawHeader("vdex", "027\x00", 4)
+	var sb []byte
+	sb = appendSectionHeader(sb, 0, 0x3c, 8)
+	sb = appendSectionHeader(sb, 1, 0, 0)
+	sb = appendSectionHeader(sb, 2, 0x3c, 4)
+	sb = appendSectionHeader(sb, 3, 0, 0)
+	raw := append(header, sb...)
+	raw = append(raw, 0xCA, 0xFE, 0xBA, 0xBE, 0x0, 0x0, 0x0, 0x0)
+	
+	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
+	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
+	pm, err := ExplainVdex(tmpFile)
+	require.NoError(t, err)
+	assert.Len(t, pm.UnmappedGaps, 0) // Should have no unmapped gaps if processed cleanly
+}
+
+func TestExplainVdex_Gap_MixedZeroNonZero(t *testing.T) {
+	header := buildRawHeader("vdex", "027\x00", 4)
+	var sb []byte
+	sb = appendSectionHeader(sb, 0, 0x3c, 4)
+	sb = appendSectionHeader(sb, 1, 0, 0)
+	sb = appendSectionHeader(sb, 2, 0x40, 0)
+	sb = appendSectionHeader(sb, 3, 0x43, 4)
+	raw := append(header, sb...)
+	raw = append(raw, 0xCA, 0xFE, 0xBA, 0xBE)
+	raw = append(raw, 0x00, 0xFF, 0x00)
+	raw = append(raw, 0x00, 0x00, 0x00, 0x00)
+	
+	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
+	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
+	pm, err := ExplainVdex(tmpFile)
+	require.NoError(t, err)
+	require.Len(t, pm.UnmappedGaps, 1)
+	assert.Equal(t, uint32(0x40), pm.UnmappedGaps[0].Start)
+	assert.Equal(t, uint32(0x43), pm.UnmappedGaps[0].End)
+}
+
+// Group E: Section Boundary
+
+func TestExplainVdex_Boundary_SectionsOverlapCheckDex(t *testing.T) {
+	header := buildRawHeader("vdex", "027\x00", 4)
+	var sb []byte
+	sb = appendSectionHeader(sb, 0, 0x3c, 4)
+	sb = appendSectionHeader(sb, 1, 0x3e, 4)
+	sb = appendSectionHeader(sb, 2, 0, 0)
+	sb = appendSectionHeader(sb, 3, 0, 0)
+	raw := append(header, sb...)
+	raw = append(raw, 0xCA, 0xFE, 0xBA, 0xBE, 0x00, 0x00)
+	
+	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
+	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
+	pm, err := ExplainVdex(tmpFile)
+	require.NoError(t, err)
+	assert.Len(t, pm.UnmappedGaps, 0)
+}
+
+func TestExplainVdex_Boundary_SectionPastEOF(t *testing.T) {
+	header := buildRawHeader("vdex", "027\x00", 4)
+	var sb []byte
+	sb = appendSectionHeader(sb, 0, 0x3c, 100)
+	sb = appendSectionHeader(sb, 1, 0, 0)
+	sb = appendSectionHeader(sb, 2, 0, 0)
+	sb = appendSectionHeader(sb, 3, 0, 0)
+	raw := append(header, sb...)
+	raw = append(raw, 0xCA, 0xFE, 0xBA, 0xBE)
+	
+	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
+	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
+	pm, err := ExplainVdex(tmpFile)
+	require.NoError(t, err)
+	assert.NotNil(t, pm)
+}
+
+func TestExplainVdex_Boundary_AllSectionsEmpty(t *testing.T) {
+	header := buildRawHeader("vdex", "027\x00", 4)
+	var sb []byte
+	sb = appendSectionHeader(sb, 0, 0x3c, 0)
+	sb = appendSectionHeader(sb, 1, 0x3c, 0)
+	sb = appendSectionHeader(sb, 2, 0x3c, 0)
+	sb = appendSectionHeader(sb, 3, 0x3c, 0)
+	raw := append(header, sb...)
+	
+	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
+	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
+	pm, err := ExplainVdex(tmpFile)
+	require.NoError(t, err)
+	assert.Empty(t, pm.UnmappedGaps)
+}
+
+func TestExplainVdex_Boundary_SameOffsetDifferentKinds(t *testing.T) {
+	header := buildRawHeader("vdex", "027\x00", 4)
+	var sb []byte
+	sb = appendSectionHeader(sb, 0, 0x3c, 4)
+	sb = appendSectionHeader(sb, 1, 0x3c, 4)
+	sb = appendSectionHeader(sb, 2, 0, 0)
+	sb = appendSectionHeader(sb, 3, 0, 0)
+	raw := append(header, sb...)
+	raw = append(raw, 0xCA, 0xFE, 0xBA, 0xBE)
+	
+	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
+	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
+	pm, err := ExplainVdex(tmpFile)
+	require.NoError(t, err)
+	assert.Empty(t, pm.UnmappedGaps)
+}
+
+func TestExplainVdex_Boundary_HeaderOverflowU64(t *testing.T) {
+	header := buildRawHeader("vdex", "027\x00", 0x40000000)
+	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
+	require.NoError(t, os.WriteFile(tmpFile, header, 0644))
+	_, err := ExplainVdex(tmpFile)
+	require.Error(t, err)
+}
+
+// Group F: Malformed Input
+
+func TestExplainVdex_Malformed_BadMagic(t *testing.T) {
+	header := buildRawHeader("xdex", "027\x00", 4)
+	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
+	require.NoError(t, os.WriteFile(tmpFile, header, 0644))
+	_, err := ExplainVdex(tmpFile)
+	require.Error(t, err)
+}
+
+func TestExplainVdex_Malformed_TooShort(t *testing.T) {
+	raw := []byte("vdex027\x00")
+	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
+	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
+	_, err := ExplainVdex(tmpFile)
+	require.Error(t, err)
+}
+
+func TestExplainVdex_Malformed_InvalidDexMagic(t *testing.T) {
+	header := buildRawHeader("vdex", "027\x00", 4)
+	var sb []byte
+	sb = appendSectionHeader(sb, 0, 0x3c, 4)
+	sb = appendSectionHeader(sb, 1, 0x40, 10)
+	sb = appendSectionHeader(sb, 2, 0, 0)
+	sb = appendSectionHeader(sb, 3, 0, 0)
+	raw := append(header, sb...)
+	raw = append(raw, 0xCA, 0xFE, 0xBA, 0xBE)
+	raw = append(raw, []byte("xxx\n")...)
+	raw = append(raw, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0)
+	
+	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
+	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
+	pm, err := ExplainVdex(tmpFile)
+	require.NoError(t, err)
+	assert.NotNil(t, pm)
+}
+
+func TestExplainVdex_Malformed_LegacyVersion021(t *testing.T) {
+	header := buildLegacyExplainVdex("021", 1)
+	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
+	require.NoError(t, os.WriteFile(tmpFile, header, 0644))
+	_, err := ExplainVdex(tmpFile)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "legacy")
+}
+
+func TestExplainVdex_Malformed_LegacyVersion025(t *testing.T) {
+	header := buildLegacyExplainVdex("025", 1)
+	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
+	require.NoError(t, os.WriteFile(tmpFile, header, 0644))
+	_, err := ExplainVdex(tmpFile)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "legacy")
+}
+
+func TestExplainVdex_Malformed_ChecksumSizeNotMul4(t *testing.T) {
+	header := buildRawHeader("vdex", "027\x00", 4)
+	var sb []byte
+	sb = appendSectionHeader(sb, 0, 0x3c, 6)
+	sb = appendSectionHeader(sb, 1, 0, 0)
+	sb = appendSectionHeader(sb, 2, 0, 0)
+	sb = appendSectionHeader(sb, 3, 0, 0)
+	raw := append(header, sb...)
+	raw = append(raw, 0xCA, 0xFE, 0xBA, 0xBE, 0x00, 0x00)
+	
+	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
+	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
+	pm, err := ExplainVdex(tmpFile)
+	require.NoError(t, err)
+	assert.NotNil(t, pm)
+}
+
+func TestExplainVdex_Malformed_EmptyFile(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
+	require.NoError(t, os.WriteFile(tmpFile, []byte{}, 0644))
+	_, err := ExplainVdex(tmpFile)
+	require.Error(t, err)
+}
