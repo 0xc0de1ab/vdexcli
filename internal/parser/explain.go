@@ -760,19 +760,31 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 			continue
 		}
 		if f.Offset > cursor {
+			gapBytes := raw[cursor:f.Offset]
 			gapSize := f.Offset - cursor
-			gapRange := model.ByteRange{Start: cursor, End: f.Offset}
-			unmappedGaps = append(unmappedGaps, gapRange)
 
+			// Classify the gap:
+			// - Known alignment padding: all-zero bytes, ≤3 bytes (4-byte align)
+			//   → emit TypePadding field only; do NOT add to UnmappedGaps.
+			// - Larger or non-zero gaps → truly unmapped; add to UnmappedGaps.
+			isAlignPad := gapSize <= 3 && allZero(gapBytes)
+			if !isAlignPad {
+				unmappedGaps = append(unmappedGaps, model.ByteRange{Start: cursor, End: f.Offset})
+			}
+
+			desc := fmt.Sprintf("Alignment padding of %d bytes.", gapSize)
+			if !isAlignPad {
+				desc = fmt.Sprintf("Unmapped gap of %d bytes (non-zero or oversized).", gapSize)
+			}
 			finalFields = append(finalFields, &model.PrimitiveField{
 				Offset:      cursor,
 				Size:        gapSize,
 				Type:        model.TypePadding,
-				RawBytes:    raw[cursor:f.Offset],
+				RawBytes:    gapBytes,
 				ParsedValue: nil,
-				LogicalPath: "vdex.gap",
-				Summary:     "Gap / Padding",
-				Description: fmt.Sprintf("Unmapped gap or padding of %d bytes.", gapSize),
+				LogicalPath: "vdex.padding",
+				Summary:     "Alignment Padding",
+				Description: desc,
 			})
 		}
 		finalFields = append(finalFields, f)
@@ -782,19 +794,25 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 	}
 
 	if cursor < fileSize {
+		gapBytes := raw[cursor:fileSize]
 		gapSize := fileSize - cursor
-		gapRange := model.ByteRange{Start: cursor, End: fileSize}
-		unmappedGaps = append(unmappedGaps, gapRange)
-
+		isAlignPad := gapSize <= 3 && allZero(gapBytes)
+		if !isAlignPad {
+			unmappedGaps = append(unmappedGaps, model.ByteRange{Start: cursor, End: fileSize})
+		}
+		desc := fmt.Sprintf("Trailing alignment padding of %d bytes.", gapSize)
+		if !isAlignPad {
+			desc = fmt.Sprintf("Unmapped trailing gap of %d bytes.", gapSize)
+		}
 		finalFields = append(finalFields, &model.PrimitiveField{
 			Offset:      cursor,
 			Size:        gapSize,
 			Type:        model.TypePadding,
-			RawBytes:    raw[cursor:fileSize],
+			RawBytes:    gapBytes,
 			ParsedValue: nil,
-			LogicalPath: "vdex.gap",
-			Summary:     "Gap / Padding",
-			Description: fmt.Sprintf("Unmapped gap or padding of %d bytes at the end of the file.", gapSize),
+			LogicalPath: "vdex.padding",
+			Summary:     "Trailing Padding",
+			Description: desc,
 		})
 	}
 
@@ -808,4 +826,16 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 		TotalBytes:   fileSize,
 		UnmappedGaps: unmappedGaps,
 	}, nil
+}
+
+// allZero reports whether every byte in b is 0x00.
+// Used by the gap-fill sweep to distinguish known alignment padding (all zeros)
+// from genuine unmapped regions that may contain non-zero data.
+func allZero(b []byte) bool {
+	for _, v := range b {
+		if v != 0 {
+			return false
+		}
+	}
+	return true
 }

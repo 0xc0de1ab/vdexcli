@@ -1490,3 +1490,149 @@ func TestExplainVdex_DEX_StringIds_AllOffsetValues(t *testing.T) {
 	assert.Equal(t, int(offs.StringIdsSize), count,
 		"Should find exactly %d string_ids entries, found %d", offs.StringIdsSize, count)
 }
+
+// ---------------------------------------------------------------------------
+// Gap classification tests
+// ---------------------------------------------------------------------------
+
+// TestAllZero verifies the allZero helper used by the gap-fill sweep.
+func TestAllZero(t *testing.T) {
+	assert.True(t, allZero([]byte{}), "empty slice should be all-zero")
+	assert.True(t, allZero([]byte{0x00}))
+	assert.True(t, allZero([]byte{0x00, 0x00, 0x00}))
+	assert.False(t, allZero([]byte{0x00, 0x01}))
+	assert.False(t, allZero([]byte{0x01}))
+	assert.False(t, allZero([]byte{0xFF, 0x00, 0x00}))
+}
+
+// TestExplainVdex_AlignmentPadding_NotInUnmappedGaps verifies that
+// all-zero alignment gaps (≤3 bytes, produced by 4-byte struct alignment)
+// are represented as TypePadding fields but NOT added to UnmappedGaps.
+// This was the root cause of false positives on 87/166 real VDEX files.
+func TestExplainVdex_AlignmentPadding_NotInUnmappedGaps(t *testing.T) {
+	// Strategy: use a checksum section of 6 bytes (odd) followed immediately
+	// by empty verDeps and typelookup sections.
+	// The typelookup section header is set to offset 0x42 (6-byte checksum at 0x3c..0x42),
+	// which is NOT 4-byte aligned, so there are 2 zero padding bytes before the
+	// TypeLookupTable size field which is placed at the next 4-aligned offset 0x44.
+	//
+	// Layout:
+	//   0x00..0x0c  VdexFileHeader (12 bytes)
+	//   0x0c..0x3c  SectionHeaders (4 × 12 bytes)
+	//   0x3c..0x42  kChecksumSection: 6 bytes (1.5 checksums — unusual but parseable as blob)
+	//   0x42..0x44  *** 2-byte zero alignment padding *** (forced by odd section end)
+	//   0x44..0x48  kTypeLookupTableSection: 4-byte size field = 0
+	//
+	// The sweep must emit TypePadding at 0x42..0x44 but NOT add it to UnmappedGaps.
+
+	const (
+		hdr    = 12
+		secHdr = 48
+	)
+	// Checksum section: 6 bytes starting at 0x3c
+	// (two uint32 would be 8 bytes; 6 is unusual but parser reads it as a raw blob)
+	// We use 6 bytes: two checksums [0xcafebabe (4B), 0xdead (2B partial)] — doesn't matter,
+	// the parser reads the checksum as N uint32 = checksumSectionSize/4 entries.
+	// To get 6 bytes total: use 1 full checksum (4B) + 2 zero bytes padding = 6 total.
+	// But parser reads count = section_size/4 = 1.5 → rounded = 1 entry (4B),
+	// leaving 2 bytes unread → gap at 0x3c+4=0x40..0x42.
+	//
+	// Simpler: put the ENTIRE alignment gap between sections by declaring
+	// verDeps section at offset 0x40 size=0, and typelookup at 0x42 size=4.
+	// The sweep will find gap 0x40..0x42 (2 bytes, all zero) → must be TypePadding only.
+
+	verOff := uint32(hdr + secHdr + 4) // 0x40 (after 4-byte checksum)
+	tlOff := verOff + 2                // 0x42 — deliberately NOT 4-aligned
+	tlSz := uint32(4)
+
+	// Section headers: checksum=4B, dex=empty, verDeps=empty(0x40,sz=0), typelookup(0x42,sz=4)
+	var sb []byte
+	sb = appendSectionHeader(sb, 0, uint32(hdr+secHdr), 4)       // checksum at 0x3c
+	sb = appendSectionHeader(sb, 1, 0, 0)                         // no DEX
+	sb = appendSectionHeader(sb, 2, verOff, 0)                    // verDeps empty
+	sb = appendSectionHeader(sb, 3, tlOff, tlSz)                  // typelookup at 0x42
+
+	raw := buildRawHeader("vdex", "027\x00", 4)
+	raw = append(raw, sb...)
+	raw = append(raw, 0xBE, 0xBA, 0xFE, 0xCA) // 4-byte checksum (0xcafebabe LE)
+	// verDeps is empty → 0 bytes
+	// gap: 2 zero bytes at 0x40..0x42 (verOff..tlOff)
+	raw = append(raw, 0x00, 0x00)
+	// typelookup size field: 0
+	raw = append(raw, 0x00, 0x00, 0x00, 0x00)
+
+	// Sanity: file should be hdr+secHdr+4(checksum)+2(gap)+4(tl) = 70 bytes
+	require.Equal(t, int(tlOff)+int(tlSz), len(raw),
+		"file assembly: expected %d bytes, got %d", int(tlOff)+int(tlSz), len(raw))
+
+	tmpFile := filepath.Join(t.TempDir(), "padtest.vdex")
+	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
+
+	pm, err := ExplainVdex(tmpFile)
+	require.NoError(t, err)
+	require.NotNil(t, pm)
+
+	// The 2-byte all-zero gap must NOT appear in UnmappedGaps.
+	assert.Empty(t, pm.UnmappedGaps,
+		"2-byte all-zero alignment padding must not appear in UnmappedGaps; got: %v",
+		pm.UnmappedGaps)
+
+	// All bytes must be covered contiguously.
+	var cursor uint32
+	for i, f := range pm.Fields {
+		assert.Equal(t, cursor, f.Offset,
+			"field[%d] %s: expected offset %d got %d", i, f.LogicalPath, cursor, f.Offset)
+		cursor += f.Size
+	}
+	assert.Equal(t, pm.TotalBytes, cursor, "all bytes covered")
+
+	// A TypePadding field of size=2 must exist at offset verOff..tlOff.
+	hasPad := false
+	for _, f := range pm.Fields {
+		if f.Type == model.TypePadding && f.Offset == verOff && f.Size == 2 {
+			hasPad = true
+		}
+	}
+	assert.True(t, hasPad, "expected TypePadding(size=2) at offset=%d", verOff)
+}
+
+// TestExplainVdex_NonZeroGap_InUnmappedGaps verifies that a gap containing
+// non-zero bytes IS reported in UnmappedGaps (genuine unknown data).
+func TestExplainVdex_NonZeroGap_InUnmappedGaps(t *testing.T) {
+	// Build a VDEX where the VerifierDeps section contains a non-zero byte
+	// that the parser would skip (simulated by making the section larger than
+	// what the parser consumes, with a non-zero trailing byte).
+	//
+	// The easiest way: build a valid minimal VDEX, then append a rogue
+	// non-zero byte at the very end (beyond what any parser touches).
+	header := buildRawHeader("vdex", "027\x00", 4)
+	checksumOff := uint32(12 + 48)
+	checksumSize := uint32(4)
+
+	sectionBuf := []byte{}
+	sectionBuf = appendSectionHeader(sectionBuf, 0, checksumOff, checksumSize)
+	sectionBuf = appendSectionHeader(sectionBuf, 1, 0, 0)
+	sectionBuf = appendSectionHeader(sectionBuf, 2, checksumOff+checksumSize, 0)
+	sectionBuf = appendSectionHeader(sectionBuf, 3, checksumOff+checksumSize, 0)
+
+	raw := append(header, sectionBuf...)
+	raw = append(raw, 0xCA, 0xFE, 0xBE, 0xBA) // checksum
+	// Append 5 non-zero trailing bytes (simulates a large unknown gap > 3 bytes)
+	raw = append(raw, 0xDE, 0xAD, 0xBE, 0xEF, 0x42)
+
+	tmpFile := filepath.Join(t.TempDir(), "nongap.vdex")
+	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
+
+	pm, err := ExplainVdex(tmpFile)
+	require.NoError(t, err)
+	require.NotNil(t, pm)
+
+	// The 5-byte non-zero trailing gap MUST appear in UnmappedGaps.
+	assert.NotEmpty(t, pm.UnmappedGaps,
+		"non-zero oversized gap must appear in UnmappedGaps")
+	if len(pm.UnmappedGaps) > 0 {
+		g := pm.UnmappedGaps[0]
+		assert.Equal(t, uint32(5), g.End-g.Start,
+			"gap size should be 5 bytes, got %d", g.End-g.Start)
+	}
+}
