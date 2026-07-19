@@ -40,11 +40,20 @@ const isVdexError = (value: unknown): value is VdexError =>
   typeof value === 'object' && value !== null &&
   'error' in value && typeof (value as VdexError).error === 'string';
 
-const isPrimitiveMap = (value: unknown): value is PrimitiveMap =>
-  typeof value === 'object' && value !== null &&
-  typeof (value as PrimitiveMap).total_bytes === 'number' &&
-  Array.isArray((value as PrimitiveMap).fields) &&
-  Array.isArray((value as PrimitiveMap).unmapped_gaps);
+const normalizePrimitiveMap = (value: unknown): PrimitiveMap | null => {
+  if (typeof value !== 'object' || value === null) return null;
+
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.total_bytes !== 'number' || !Array.isArray(candidate.fields)) return null;
+  if (candidate.unmapped_gaps !== null && !Array.isArray(candidate.unmapped_gaps)) return null;
+
+  return {
+    ...candidate,
+    total_bytes: candidate.total_bytes,
+    fields: candidate.fields,
+    unmapped_gaps: candidate.unmapped_gaps ?? [],
+  } as PrimitiveMap;
+};
 
 const formatBytes = (bytes: number): string => {
   if (bytes === 0) return '0 B';
@@ -98,10 +107,11 @@ export default function App() {
       if (isVdexError(parsedResult)) {
         throw new Error(parsedResult.error);
       }
-      if (!isPrimitiveMap(parsedResult)) {
+      const primitiveMap = normalizePrimitiveMap(parsedResult);
+      if (!primitiveMap) {
         throw new Error('WASM returned an invalid analysis result');
       }
-      setData(parsedResult);
+      setData(primitiveMap);
     } catch (err) {
       console.error(err);
       setError(err instanceof Error ? err.message : "Failed to process file");

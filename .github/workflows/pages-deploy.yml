@@ -26,6 +26,7 @@ jobs:
   deploy:
     outputs:
       page_url: ${{ steps.deployment.outputs.page_url }}
+      wasm_smoke: ${{ steps.wasm-smoke.outcome }}
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -55,6 +56,11 @@ jobs:
         working-directory: ./web
         run: npm ci
 
+      - name: Test WASM bridge
+        id: wasm-smoke
+        working-directory: ./web
+        run: npm run test:wasm
+
       - name: Build Web App
         working-directory: ./web
         run: npm run build
@@ -79,6 +85,7 @@ jobs:
     env:
       DEPLOY_RESULT: ${{ needs.deploy.result }}
       PAGE_URL: ${{ needs.deploy.outputs.page_url }}
+      WASM_SMOKE: ${{ needs.deploy.outputs.wasm_smoke }}
     steps:
       - name: Write workflow summary
         run: |
@@ -92,6 +99,7 @@ jobs:
             printf '| Result | `%s` |\n' "$DEPLOY_RESULT"
             printf '| Node.js | `24` |\n'
             printf '| Go version | `go.mod` |\n'
+            printf '| WASM bridge | `%s` |\n' "${WASM_SMOKE:-unavailable}"
             printf '| Base path | `/vdexcli/` |\n'
             printf '| Deployment | %s |\n' "$page_url"
             echo

@@ -168,6 +168,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       size: ${{ steps.wasm.outputs.size }}
+      smoke: ${{ steps.smoke.outcome }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
@@ -184,6 +185,15 @@ jobs:
             ./wasm/
           ls -lh vdex.wasm
           echo "size=$(stat -c%s vdex.wasm)" >> "$GITHUB_OUTPUT"
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Test WASM bridge
+        id: smoke
+        run: |
+          cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" wasm_exec.js
+          node web/scripts/wasm-smoke.mjs vdex.wasm wasm_exec.js
       - name: Upload WASM artifact
         if: github.event_name == 'push'
         uses: actions/upload-artifact@v7
@@ -207,6 +217,7 @@ jobs:
       WASM_RESULT: ${{ needs['build-wasm'].result }}
       COVERAGE: ${{ needs.test.outputs.coverage }}
       WASM_SIZE: ${{ needs['build-wasm'].outputs.size }}
+      WASM_SMOKE: ${{ needs['build-wasm'].outputs.smoke }}
     steps:
       - name: Write workflow summary
         run: |
@@ -225,6 +236,7 @@ jobs:
             printf '| Tests and coverage | `%s` |\n' "$TEST_RESULT"
             printf '| Cross-platform builds | `%s` |\n' "$BUILD_RESULT"
             printf '| WASM build | `%s` |\n' "$WASM_RESULT"
+            printf '| WASM bridge | `%s` |\n' "${WASM_SMOKE:-unavailable}"
             echo
             echo "### Outputs"
             printf -- '- Coverage: `%s`\n' "$coverage"

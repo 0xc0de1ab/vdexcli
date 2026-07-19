@@ -10,7 +10,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint src",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:wasm": "node scripts/wasm-smoke.mjs public/vdex.wasm public/wasm_exec.js"
   },
   "dependencies": {
     "lucide-react": "^1.25.0",

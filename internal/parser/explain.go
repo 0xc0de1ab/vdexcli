@@ -767,7 +767,7 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 	})
 
 	var finalFields []*model.PrimitiveField
-	var unmappedGaps []model.ByteRange
+	unmappedGaps := make([]model.ByteRange, 0)
 	var cursor uint32 = 0
 	fileSize := uint32(len(raw))
 

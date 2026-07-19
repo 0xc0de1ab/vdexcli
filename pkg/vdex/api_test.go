@@ -172,6 +172,11 @@ func TestExplainBytes_ReturnsPrimitiveMap(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, fm)
 	assert.Greater(t, len(fm.Fields), 10, "Expected many annotated fields")
+	require.NotNil(t, fm.UnmappedGaps, "JSON clients require an array for empty gaps")
+
+	encoded, err := json.Marshal(fm)
+	require.NoError(t, err)
+	assert.Contains(t, string(encoded), `"unmapped_gaps":[]`)
 }
 
 func TestExplainBytes_100PercentCoverage(t *testing.T) {
