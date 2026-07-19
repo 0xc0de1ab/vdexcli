@@ -17,8 +17,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
       - name: Install zstd
@@ -48,8 +48,8 @@ jobs:
             goarch: amd64
             suffix: '.exe'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
       - name: Build
@@ -75,7 +75,7 @@ jobs:
           fi
           ls -lh ${ARCHIVE}.*
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: vdexcli-${{ matrix.goos }}-${{ matrix.goarch }}
           path: build/${{ matrix.goos }}-${{ matrix.goarch }}/release/vdexcli-*
@@ -84,10 +84,12 @@ jobs:
   publish:
     needs: release
     runs-on: ubuntu-latest
+    outputs:
+      release_url: ${{ steps.github_release.outputs.url }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
@@ -96,7 +98,43 @@ jobs:
       - name: Generate checksums
         run: cd dist && sha256sum vdexcli-* > vdexcli-checksums.txt && cat vdexcli-checksums.txt
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        id: github_release
+        uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
           files: dist/*
+
+  summary:
+    name: "summary"
+    if: always()
+    needs: [test, release, publish]
+    runs-on: ubuntu-latest
+    env:
+      TEST_RESULT: ${{ needs.test.result }}
+      BUILD_RESULT: ${{ needs.release.result }}
+      PUBLISH_RESULT: ${{ needs.publish.result }}
+      RELEASE_URL: ${{ needs.publish.outputs.release_url }}
+    steps:
+      - name: Write workflow summary
+        run: |
+          short_sha="${GITHUB_SHA::7}"
+          release_url="${RELEASE_URL:-unavailable}"
+          {
+            echo "## Release"
+            echo
+            echo "| Stage | Result |"
+            echo "| --- | --- |"
+            printf '| Tests | `%s` |\n' "$TEST_RESULT"
+            printf '| Build and package | `%s` |\n' "$BUILD_RESULT"
+            printf '| Publish | `%s` |\n' "$PUBLISH_RESULT"
+            echo
+            echo "### Artifacts"
+            printf -- '- Tag: `%s`\n' "$GITHUB_REF_NAME"
+            printf -- '- Targets: `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64`, `windows/amd64`\n'
+            printf -- '- Checksums: `vdexcli-checksums.txt`\n'
+            printf -- '- Release: %s\n' "$release_url"
+            echo
+            echo "### Run"
+            printf -- '- Event: `%s`\n' "$GITHUB_EVENT_NAME"
+            printf -- '- Commit: [`%s`](%s/%s/commit/%s)\n' "$short_sha" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_SHA"
+          } >> "$GITHUB_STEP_SUMMARY"

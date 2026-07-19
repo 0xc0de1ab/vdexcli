@@ -24,16 +24,18 @@ concurrency:
 
 jobs:
   deploy:
+    outputs:
+      page_url: ${{ steps.deployment.outputs.page_url }}
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-      
+        uses: actions/checkout@v6
+
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
@@ -45,7 +47,7 @@ jobs:
           cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" web/public/
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24
 
@@ -58,13 +60,43 @@ jobs:
         run: npm run build
 
       - name: Setup Pages
-        uses: actions/configure-pages@v4
-        
+        uses: actions/configure-pages@v6
+
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: './web/dist'
 
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
+
+  summary:
+    name: "summary"
+    if: always()
+    needs: deploy
+    runs-on: ubuntu-latest
+    env:
+      DEPLOY_RESULT: ${{ needs.deploy.result }}
+      PAGE_URL: ${{ needs.deploy.outputs.page_url }}
+    steps:
+      - name: Write workflow summary
+        run: |
+          short_sha="${GITHUB_SHA::7}"
+          page_url="${PAGE_URL:-unavailable}"
+          {
+            echo "## GitHub Pages Deployment"
+            echo
+            echo "| Item | Value |"
+            echo "| --- | --- |"
+            printf '| Result | `%s` |\n' "$DEPLOY_RESULT"
+            printf '| Node.js | `24` |\n'
+            printf '| Go version | `go.mod` |\n'
+            printf '| Base path | `/vdexcli/` |\n'
+            printf '| Deployment | %s |\n' "$page_url"
+            echo
+            echo "### Run"
+            printf -- '- Event: `%s`\n' "$GITHUB_EVENT_NAME"
+            printf -- '- Ref: `%s`\n' "$GITHUB_REF_NAME"
+            printf -- '- Commit: [`%s`](%s/%s/commit/%s)\n' "$short_sha" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_SHA"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,4 +1,4 @@
-name: Integration Tests
+name: "[05] Integration tests"
 
 on:
   push:
@@ -15,18 +15,53 @@ jobs:
   integration:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           lfs: true
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
       - name: Install zstd
         run: sudo apt-get install -y zstd
       - name: Run all tests (including 166 real VDEX files)
+        id: tests
         run: go test -v -count=1 -timeout 300s ./...
       - name: Coverage report
+        id: coverage
         run: |
           go test -coverprofile=coverage.out ./internal/binutil/ ./internal/parser/ ./internal/modifier/ ./internal/extractor/
           echo "--- Per-package coverage ---"
           go tool cover -func=coverage.out | grep -E 'total:|binutil|parser|modifier|extractor'
+          total=$(go tool cover -func=coverage.out | tail -1 | awk '{print $3}')
+          echo "total=$total" >> "$GITHUB_OUTPUT"
+
+      - name: Write workflow summary
+        if: always()
+        env:
+          JOB_RESULT: ${{ job.status }}
+          TEST_RESULT: ${{ steps.tests.outcome }}
+          COVERAGE_RESULT: ${{ steps.coverage.outcome }}
+          COVERAGE: ${{ steps.coverage.outputs.total }}
+        run: |
+          short_sha="${GITHUB_SHA::7}"
+          coverage="${COVERAGE:-unavailable}"
+          fixture="missing"
+          if [ -f testdata/vdex-files-android-16.0.0_r4.tar.zst ]; then
+            fixture="available ($(du -h testdata/vdex-files-android-16.0.0_r4.tar.zst | cut -f1))"
+          fi
+          {
+            echo "## Integration Tests"
+            echo
+            echo "| Item | Value |"
+            echo "| --- | --- |"
+            printf '| Workflow | `%s` |\n' "$JOB_RESULT"
+            printf '| Full test suite | `%s` |\n' "$TEST_RESULT"
+            printf '| Coverage step | `%s` |\n' "$COVERAGE_RESULT"
+            printf '| Coverage | `%s` |\n' "$coverage"
+            printf '| Android 16 VDEX fixture | `%s` |\n' "$fixture"
+            echo
+            echo "### Run"
+            printf -- '- Event: `%s`\n' "$GITHUB_EVENT_NAME"
+            printf -- '- Ref: `%s`\n' "$GITHUB_REF_NAME"
+            printf -- '- Commit: [`%s`](%s/%s/commit/%s)\n' "$short_sha" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_SHA"
+          } >> "$GITHUB_STEP_SUMMARY"

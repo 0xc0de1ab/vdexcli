@@ -9,22 +9,62 @@ on:
         type: string
 
 permissions:
+  actions: write
   contents: write
 
 jobs:
   bump:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-      
+
+      - name: Validate version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Version must match vMAJOR.MINOR.PATCH"
+            exit 1
+          fi
+
       - name: Configure Git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          
+
       - name: Create and push tag
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
-          git tag ${{ github.event.inputs.version }}
-          git push origin ${{ github.event.inputs.version }}
+          git tag "$VERSION"
+          git push origin "$VERSION"
+
+      - name: Trigger release workflow
+        id: release_dispatch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: gh workflow run release.yml --ref "$VERSION"
+
+      - name: Write workflow summary
+        if: always()
+        env:
+          RESULT: ${{ job.status }}
+          RELEASE_DISPATCH: ${{ steps.release_dispatch.outcome }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          short_sha="${GITHUB_SHA::7}"
+          {
+            echo "## Version Tag"
+            echo
+            echo "| Item | Value |"
+            echo "| --- | --- |"
+            printf '| Result | `%s` |\n' "$RESULT"
+            printf '| Tag | `%s` |\n' "$VERSION"
+            printf '| Release dispatch | `%s` |\n' "$RELEASE_DISPATCH"
+            printf '| Source ref | `%s` |\n' "$GITHUB_REF_NAME"
+            printf '| Commit | [`%s`](%s/%s/commit/%s) |\n' "$short_sha" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_SHA"
+            printf '| Triggered by | `%s` |\n' "$GITHUB_ACTOR"
+          } >> "$GITHUB_STEP_SUMMARY"

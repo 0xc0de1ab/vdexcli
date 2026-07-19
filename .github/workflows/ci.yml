@@ -28,8 +28,8 @@ jobs:
     name: "fmt"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: ${{ github.event.inputs.skip_cache != 'true' }}
@@ -47,8 +47,8 @@ jobs:
     name: "vet"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: ${{ github.event.inputs.skip_cache != 'true' }}
@@ -66,8 +66,8 @@ jobs:
     name: "lint"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: ${{ github.event.inputs.skip_cache != 'true' }}
@@ -81,8 +81,8 @@ jobs:
     name: "vulncheck"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: ${{ github.event.inputs.skip_cache != 'true' }}
@@ -93,9 +93,11 @@ jobs:
   test:
     name: "test"
     runs-on: ubuntu-latest
+    outputs:
+      coverage: ${{ steps.coverage.outputs.total }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: ${{ github.event.inputs.skip_cache != 'true' }}
@@ -104,6 +106,7 @@ jobs:
       - name: Run tests
         run: go test -v -count=1 ./...
       - name: Coverage check (≥ 85%)
+        id: coverage
         run: |
           go test -coverprofile=coverage.out \
             ./internal/binutil/ \
@@ -115,13 +118,14 @@ jobs:
             ./pkg/vdex/
           total=$(go tool cover -func=coverage.out | tail -1 | awk '{print $3}' | tr -d '%')
           echo "Total coverage: ${total}%"
+          echo "total=${total}%" >> "$GITHUB_OUTPUT"
           if [ "$(echo "$total < 85" | bc)" -eq 1 ]; then
             echo "::error::Coverage ${total}% is below minimum 85%"
             exit 1
           fi
       - name: Upload coverage artifact
         if: github.event_name == 'push'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage
           path: coverage.out
@@ -140,8 +144,8 @@ jobs:
           - goos: windows
             goarch: arm64
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: ${{ github.event.inputs.skip_cache != 'true' }}
@@ -162,13 +166,16 @@ jobs:
   build-wasm:
     name: "build (wasm)"
     runs-on: ubuntu-latest
+    outputs:
+      size: ${{ steps.wasm.outputs.size }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: ${{ github.event.inputs.skip_cache != 'true' }}
       - name: Build WASM
+        id: wasm
         run: |
           GOOS=js GOARCH=wasm go build \
             -trimpath \
@@ -176,10 +183,56 @@ jobs:
             -o vdex.wasm \
             ./wasm/
           ls -lh vdex.wasm
+          echo "size=$(stat -c%s vdex.wasm)" >> "$GITHUB_OUTPUT"
       - name: Upload WASM artifact
         if: github.event_name == 'push'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: vdex-wasm
           path: vdex.wasm
           retention-days: 7
+
+  summary:
+    name: "summary"
+    if: always()
+    needs: [fmt-check, vet, lint, vulncheck, test, build, build-wasm]
+    runs-on: ubuntu-latest
+    env:
+      FMT_RESULT: ${{ needs['fmt-check'].result }}
+      VET_RESULT: ${{ needs.vet.result }}
+      LINT_RESULT: ${{ needs.lint.result }}
+      VULNCHECK_RESULT: ${{ needs.vulncheck.result }}
+      TEST_RESULT: ${{ needs.test.result }}
+      BUILD_RESULT: ${{ needs.build.result }}
+      WASM_RESULT: ${{ needs['build-wasm'].result }}
+      COVERAGE: ${{ needs.test.outputs.coverage }}
+      WASM_SIZE: ${{ needs['build-wasm'].outputs.size }}
+    steps:
+      - name: Write workflow summary
+        run: |
+          short_sha="${GITHUB_SHA::7}"
+          coverage="${COVERAGE:-unavailable}"
+          wasm_size="${WASM_SIZE:-unavailable}"
+          {
+            echo "## CI Build and Test"
+            echo
+            echo "| Check | Result |"
+            echo "| --- | --- |"
+            printf '| Format | `%s` |\n' "$FMT_RESULT"
+            printf '| Vet and modules | `%s` |\n' "$VET_RESULT"
+            printf '| Lint | `%s` |\n' "$LINT_RESULT"
+            printf '| Vulnerability scan | `%s` |\n' "$VULNCHECK_RESULT"
+            printf '| Tests and coverage | `%s` |\n' "$TEST_RESULT"
+            printf '| Cross-platform builds | `%s` |\n' "$BUILD_RESULT"
+            printf '| WASM build | `%s` |\n' "$WASM_RESULT"
+            echo
+            echo "### Outputs"
+            printf -- '- Coverage: `%s`\n' "$coverage"
+            printf -- '- Targets: `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64`, `windows/amd64`\n'
+            printf -- '- WASM artifact: `%s bytes`\n' "$wasm_size"
+            echo
+            echo "### Run"
+            printf -- '- Event: `%s`\n' "$GITHUB_EVENT_NAME"
+            printf -- '- Ref: `%s`\n' "$GITHUB_REF_NAME"
+            printf -- '- Commit: [`%s`](%s/%s/commit/%s)\n' "$short_sha" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_SHA"
+          } >> "$GITHUB_STEP_SUMMARY"
