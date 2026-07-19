@@ -106,13 +106,13 @@ func renderParseOutput(cmd *cobra.Command, report *model.VdexReport) error {
 	case FormatJSONL:
 		return presenter.WriteJSONL(w, report)
 	case FormatSummary:
-		presenter.WriteSummary(w, report)
+		return presenter.WriteSummary(w, report)
 	case FormatSections:
-		presenter.WriteSections(w, report)
+		return presenter.WriteSections(w, report)
 	case FormatCoverage:
-		presenter.WriteCoverage(w, report)
+		return presenter.WriteCoverage(w, report)
 	case FormatTable:
-		presenter.WriteTable(w, report)
+		return presenter.WriteTable(w, report)
 	default:
 		presenter.PrintText(report)
 	}

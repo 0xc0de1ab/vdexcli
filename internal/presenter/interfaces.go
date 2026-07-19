@@ -13,13 +13,13 @@ type ReportWriter interface {
 
 // SummaryWriter renders a one-line summary for a specific operation.
 type SummaryWriter interface {
-	WriteModify(w io.Writer, s model.ModifySummary)
-	WriteExtract(w io.Writer, s model.ExtractSummary)
+	WriteModify(w io.Writer, s model.ModifySummary) error
+	WriteExtract(w io.Writer, s model.ExtractSummary) error
 }
 
 // DiffWriter renders a structural diff between two VDEX files.
 type DiffWriter interface {
-	WriteDiff(w io.Writer, d model.VdexDiff)
+	WriteDiff(w io.Writer, d model.VdexDiff) error
 }
 
 // WarningProcessor categorizes and filters warnings.
@@ -56,43 +56,39 @@ func (TextWriter) Write(_ io.Writer, report *model.VdexReport) error {
 type TableWriter struct{}
 
 func (TableWriter) Write(w io.Writer, report *model.VdexReport) error {
-	WriteTable(w, report)
-	return nil
+	return WriteTable(w, report)
 }
 
 // SummaryLineWriter implements ReportWriter for one-line summary.
 type SummaryLineWriter struct{}
 
 func (SummaryLineWriter) Write(w io.Writer, report *model.VdexReport) error {
-	WriteSummary(w, report)
-	return nil
+	return WriteSummary(w, report)
 }
 
 // SectionsWriter implements ReportWriter for TSV section table.
 type SectionsWriter struct{}
 
 func (SectionsWriter) Write(w io.Writer, report *model.VdexReport) error {
-	WriteSections(w, report)
-	return nil
+	return WriteSections(w, report)
 }
 
 // CoverageWriter implements ReportWriter for byte coverage report.
 type CoverageWriter struct{}
 
 func (CoverageWriter) Write(w io.Writer, report *model.VdexReport) error {
-	WriteCoverage(w, report)
-	return nil
+	return WriteCoverage(w, report)
 }
 
 // DefaultSummaryWriter implements SummaryWriter.
 type DefaultSummaryWriter struct{}
 
-func (DefaultSummaryWriter) WriteModify(w io.Writer, s model.ModifySummary) {
-	WriteModifySummary(w, s)
+func (DefaultSummaryWriter) WriteModify(w io.Writer, s model.ModifySummary) error {
+	return WriteModifySummary(w, s)
 }
 
-func (DefaultSummaryWriter) WriteExtract(w io.Writer, s model.ExtractSummary) {
-	WriteExtractSummary(w, s)
+func (DefaultSummaryWriter) WriteExtract(w io.Writer, s model.ExtractSummary) error {
+	return WriteExtractSummary(w, s)
 }
 
 // DefaultWarningProcessor implements WarningProcessor.
@@ -109,8 +105,8 @@ func (DefaultWarningProcessor) StrictMatch(warnings []string, filter string) ([]
 // DefaultDiffWriter implements DiffWriter.
 type DefaultDiffWriter struct{}
 
-func (DefaultDiffWriter) WriteDiff(w io.Writer, d model.VdexDiff) {
-	WriteDiffText(w, d)
+func (DefaultDiffWriter) WriteDiff(w io.Writer, d model.VdexDiff) error {
+	return WriteDiffText(w, d)
 }
 
 // Compile-time interface compliance checks.

@@ -240,7 +240,9 @@ func renderModifyOutput(cmd *cobra.Command, summary model.ModifySummary, section
 		}
 		return nil
 	case FormatSummary:
-		presenter.WriteModifySummary(w, summary)
+		if err := presenter.WriteModifySummary(w, summary); err != nil {
+			return err
+		}
 		return firstError(strictMatched, failureReason, compareErr, parseErr, writeErr)
 	default:
 		printModifyText(summary, section, newPayload, failureCategory, failureReason, strictMatched, report, m)

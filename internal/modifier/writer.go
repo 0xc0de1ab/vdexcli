@@ -82,7 +82,10 @@ func AppendModifyLog(path string, summary model.ModifySummary, cliArgs map[strin
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	_, err = f.Write(raw)
-	return err
+	_, writeErr := f.Write(raw)
+	closeErr := f.Close()
+	if writeErr != nil {
+		return writeErr
+	}
+	return closeErr
 }

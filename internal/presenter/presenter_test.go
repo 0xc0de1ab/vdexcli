@@ -3,6 +3,7 @@ package presenter
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -12,6 +13,12 @@ import (
 
 	"github.com/0xc0de1ab/vdexcli/internal/model"
 )
+
+type failingWriter struct{}
+
+func (failingWriter) Write(_ []byte) (int, error) {
+	return 0, errors.New("write failed")
+}
 
 func sampleReport() *model.VdexReport {
 	return &model.VdexReport{
@@ -79,7 +86,7 @@ func TestWriteJSONL(t *testing.T) {
 func TestWriteSummary(t *testing.T) {
 	var buf bytes.Buffer
 	r := sampleReport()
-	WriteSummary(&buf, r)
+	require.NoError(t, WriteSummary(&buf, r))
 	out := buf.String()
 	assert.Contains(t, out, "status=warn")
 	assert.Contains(t, out, "size=204")
@@ -89,9 +96,15 @@ func TestWriteSummary(t *testing.T) {
 	assert.Len(t, lines, 1)
 }
 
+func TestWriteSummary_PropagatesWriteError(t *testing.T) {
+	err := WriteSummary(failingWriter{}, sampleReport())
+
+	require.EqualError(t, err, "write failed")
+}
+
 func TestWriteSummary_Nil(t *testing.T) {
 	var buf bytes.Buffer
-	WriteSummary(&buf, nil)
+	require.NoError(t, WriteSummary(&buf, nil))
 	assert.Contains(t, buf.String(), "status=error")
 }
 
@@ -100,7 +113,7 @@ func TestWriteSummary_NoWarnings(t *testing.T) {
 	r := sampleReport()
 	r.Warnings = nil
 	r.Errors = nil
-	WriteSummary(&buf, r)
+	require.NoError(t, WriteSummary(&buf, r))
 	assert.Contains(t, buf.String(), "status=ok")
 }
 
@@ -108,7 +121,7 @@ func TestWriteSummary_WithErrors(t *testing.T) {
 	var buf bytes.Buffer
 	r := sampleReport()
 	r.Errors = []string{"fatal"}
-	WriteSummary(&buf, r)
+	require.NoError(t, WriteSummary(&buf, r))
 	assert.Contains(t, buf.String(), "status=error")
 }
 
@@ -116,7 +129,7 @@ func TestWriteSummary_WithErrors(t *testing.T) {
 
 func TestWriteSections(t *testing.T) {
 	var buf bytes.Buffer
-	WriteSections(&buf, sampleReport())
+	require.NoError(t, WriteSections(&buf, sampleReport()))
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
 	assert.Equal(t, "kind\tname\toffset\tsize", lines[0])
 	assert.Len(t, lines, 5) // header + 4 sections
@@ -125,7 +138,7 @@ func TestWriteSections(t *testing.T) {
 
 func TestWriteSections_Nil(t *testing.T) {
 	var buf bytes.Buffer
-	WriteSections(&buf, nil)
+	require.NoError(t, WriteSections(&buf, nil))
 	assert.Empty(t, buf.String())
 }
 
@@ -133,7 +146,7 @@ func TestWriteSections_Nil(t *testing.T) {
 
 func TestWriteCoverage(t *testing.T) {
 	var buf bytes.Buffer
-	WriteCoverage(&buf, sampleReport())
+	require.NoError(t, WriteCoverage(&buf, sampleReport()))
 	out := buf.String()
 	assert.Contains(t, out, "coverage=100.00%")
 	assert.Contains(t, out, "parsed=204")
@@ -141,7 +154,7 @@ func TestWriteCoverage(t *testing.T) {
 
 func TestWriteCoverage_Nil(t *testing.T) {
 	var buf bytes.Buffer
-	WriteCoverage(&buf, nil)
+	require.NoError(t, WriteCoverage(&buf, nil))
 	assert.Contains(t, buf.String(), "no coverage data")
 }
 
@@ -149,7 +162,7 @@ func TestWriteCoverage_NoCoverage(t *testing.T) {
 	var buf bytes.Buffer
 	r := sampleReport()
 	r.Coverage = nil
-	WriteCoverage(&buf, r)
+	require.NoError(t, WriteCoverage(&buf, r))
 	assert.Contains(t, buf.String(), "no coverage data")
 }
 
@@ -160,7 +173,7 @@ func TestWriteTable(t *testing.T) {
 	defer SetColor(false)
 
 	var buf bytes.Buffer
-	WriteTable(&buf, sampleReport())
+	require.NoError(t, WriteTable(&buf, sampleReport()))
 	out := buf.String()
 	assert.Contains(t, out, "VDEX vdex  v027")
 	assert.Contains(t, out, "kChecksumSection")
@@ -170,14 +183,14 @@ func TestWriteTable(t *testing.T) {
 
 func TestWriteTable_Nil(t *testing.T) {
 	var buf bytes.Buffer
-	WriteTable(&buf, nil)
+	require.NoError(t, WriteTable(&buf, nil))
 	assert.Empty(t, buf.String())
 }
 
 func TestWriteTable_WithWarnings(t *testing.T) {
 	SetColor(false)
 	var buf bytes.Buffer
-	WriteTable(&buf, sampleReport())
+	require.NoError(t, WriteTable(&buf, sampleReport()))
 	assert.Contains(t, buf.String(), "warnings: 1")
 	assert.Contains(t, buf.String(), "! section kind 3 has zero size")
 }
@@ -187,7 +200,7 @@ func TestWriteTable_WithErrors(t *testing.T) {
 	var buf bytes.Buffer
 	r := sampleReport()
 	r.Errors = []string{"fatal error"}
-	WriteTable(&buf, r)
+	require.NoError(t, WriteTable(&buf, r))
 	assert.Contains(t, buf.String(), "errors: 1")
 	assert.Contains(t, buf.String(), "! fatal error")
 }
@@ -197,7 +210,7 @@ func TestWriteTable_WithErrors(t *testing.T) {
 func TestWriteModifySummary(t *testing.T) {
 	var buf bytes.Buffer
 	s := model.ModifySummary{Status: "ok", Mode: "replace", TotalClasses: 10, ModifiedClasses: 3}
-	WriteModifySummary(&buf, s)
+	require.NoError(t, WriteModifySummary(&buf, s))
 	out := buf.String()
 	assert.Contains(t, out, "status=ok")
 	assert.Contains(t, out, "mode=replace")
@@ -209,7 +222,7 @@ func TestWriteModifySummary(t *testing.T) {
 func TestWriteExtractSummary(t *testing.T) {
 	var buf bytes.Buffer
 	s := model.ExtractSummary{File: "app.vdex", ExtractDir: "./out", Extracted: 3, Failed: 0}
-	WriteExtractSummary(&buf, s)
+	require.NoError(t, WriteExtractSummary(&buf, s))
 	out := buf.String()
 	assert.Contains(t, out, "status=ok")
 	assert.Contains(t, out, "extracted=3")
@@ -218,7 +231,7 @@ func TestWriteExtractSummary(t *testing.T) {
 func TestWriteExtractSummary_WithErrors(t *testing.T) {
 	var buf bytes.Buffer
 	s := model.ExtractSummary{Errors: []string{"fail"}}
-	WriteExtractSummary(&buf, s)
+	require.NoError(t, WriteExtractSummary(&buf, s))
 	assert.Contains(t, buf.String(), "status=error")
 }
 
@@ -335,13 +348,23 @@ func TestPrintGroupedWarnings_Empty(t *testing.T) {
 
 func captureStdout(f func()) string {
 	old := os.Stdout
-	r, w, _ := os.Pipe()
+	r, w, err := os.Pipe()
+	if err != nil {
+		panic(err)
+	}
 	os.Stdout = w
 	f()
-	w.Close()
+	if err := w.Close(); err != nil {
+		panic(err)
+	}
 	os.Stdout = old
 	var buf bytes.Buffer
-	buf.ReadFrom(r)
+	if _, err := buf.ReadFrom(r); err != nil {
+		panic(err)
+	}
+	if err := r.Close(); err != nil {
+		panic(err)
+	}
 	return buf.String()
 }
 
@@ -363,7 +386,7 @@ func TestWriteTable_WithDexAndVerifier(t *testing.T) {
 	r.Coverage.Gaps = []model.ByteCoverageRange{{Offset: 175, Size: 1, Label: "gap/padding"}}
 
 	var buf bytes.Buffer
-	WriteTable(&buf, r)
+	require.NoError(t, WriteTable(&buf, r))
 	out := buf.String()
 	assert.Contains(t, out, "dex\\n035")
 	assert.Contains(t, out, "sha1=abcdef1234567890abcd...")
@@ -381,7 +404,7 @@ func TestWriteTable_LowCoverage(t *testing.T) {
 	r := sampleReport()
 	r.Coverage.CoveragePercent = 50.0
 	var buf bytes.Buffer
-	WriteTable(&buf, r)
+	require.NoError(t, WriteTable(&buf, r))
 	assert.Contains(t, buf.String(), "50.0%")
 }
 
@@ -573,7 +596,7 @@ func TestWriteDiffText_Identical(t *testing.T) {
 		Summary: model.DiffSummary{Identical: true},
 	}
 	var buf bytes.Buffer
-	WriteDiffText(&buf, d)
+	require.NoError(t, WriteDiffText(&buf, d))
 	assert.Contains(t, buf.String(), "identical")
 	assert.Contains(t, buf.String(), "a.vdex")
 	assert.Contains(t, buf.String(), "b.vdex")
@@ -610,7 +633,7 @@ func TestWriteDiffText_AllSectionsChanged(t *testing.T) {
 		},
 	}
 	var buf bytes.Buffer
-	WriteDiffText(&buf, d)
+	require.NoError(t, WriteDiffText(&buf, d))
 	out := buf.String()
 
 	assert.Contains(t, out, "VDEX diff")
@@ -652,7 +675,7 @@ func TestWriteDiffText_NegativeDelta(t *testing.T) {
 		Summary: model.DiffSummary{VerifierChanged: 1},
 	}
 	var buf bytes.Buffer
-	WriteDiffText(&buf, d)
+	require.NoError(t, WriteDiffText(&buf, d))
 	assert.Contains(t, buf.String(), "-5")
 }
 
@@ -669,7 +692,7 @@ func TestWriteDiffText_ZeroDelta(t *testing.T) {
 		Summary: model.DiffSummary{TypeLookupChanged: 0},
 	}
 	var buf bytes.Buffer
-	WriteDiffText(&buf, d)
+	require.NoError(t, WriteDiffText(&buf, d))
 	assert.Contains(t, buf.String(), "+0")
 }
 
@@ -682,7 +705,7 @@ func TestWriteDiffText_ChecksumRemoved(t *testing.T) {
 		Summary:      model.DiffSummary{ChecksumsChanged: 2},
 	}
 	var buf bytes.Buffer
-	WriteDiffText(&buf, d)
+	require.NoError(t, WriteDiffText(&buf, d))
 	assert.Contains(t, buf.String(), "-2")
 }
 
@@ -740,7 +763,7 @@ func TestWriteCoverage_WithGaps(t *testing.T) {
 		},
 	}
 	var buf bytes.Buffer
-	WriteCoverage(&buf, r)
+	require.NoError(t, WriteCoverage(&buf, r))
 	out := buf.String()
 	assert.Contains(t, out, "96.00%")
 	assert.Contains(t, out, "gaps:")
@@ -749,13 +772,13 @@ func TestWriteCoverage_WithGaps(t *testing.T) {
 
 func TestWriteCoverage_NilReport(t *testing.T) {
 	var buf bytes.Buffer
-	WriteCoverage(&buf, nil)
+	require.NoError(t, WriteCoverage(&buf, nil))
 	assert.Contains(t, buf.String(), "no coverage data")
 }
 
 func TestWriteCoverage_NilCoverage(t *testing.T) {
 	var buf bytes.Buffer
-	WriteCoverage(&buf, &model.VdexReport{File: "test.vdex"})
+	require.NoError(t, WriteCoverage(&buf, &model.VdexReport{File: "test.vdex"}))
 	assert.Contains(t, buf.String(), "no coverage data")
 }
 
@@ -770,7 +793,7 @@ func TestDefaultDiffWriter(t *testing.T) {
 		FileA: "a.vdex", FileB: "b.vdex", SizeA: 100, SizeB: 100,
 		Summary: model.DiffSummary{Identical: true},
 	}
-	w.WriteDiff(&buf, d)
+	require.NoError(t, w.WriteDiff(&buf, d))
 	assert.Contains(t, buf.String(), "identical")
 }
 
@@ -816,10 +839,10 @@ func TestDefaultWarningProcessor(t *testing.T) {
 func TestDefaultSummaryWriter(t *testing.T) {
 	w := DefaultSummaryWriter{}
 	var buf bytes.Buffer
-	w.WriteModify(&buf, model.ModifySummary{Status: "ok"})
+	require.NoError(t, w.WriteModify(&buf, model.ModifySummary{Status: "ok"}))
 	assert.Contains(t, buf.String(), "status=ok")
 	buf.Reset()
-	w.WriteExtract(&buf, model.ExtractSummary{File: "test.vdex", Extracted: 1})
+	require.NoError(t, w.WriteExtract(&buf, model.ExtractSummary{File: "test.vdex", Extracted: 1}))
 	assert.Contains(t, buf.String(), "extracted=1")
 }
 
@@ -832,7 +855,7 @@ func TestWriteDiffText_NegativeSectionDelta(t *testing.T) {
 		Summary:      model.DiffSummary{SectionsChanged: 1},
 	}
 	var buf bytes.Buffer
-	WriteDiffText(&buf, d)
+	require.NoError(t, WriteDiffText(&buf, d))
 	assert.Contains(t, buf.String(), "-50")
 }
 
@@ -842,7 +865,7 @@ func TestWriteTable_LowCoverageRedPath(t *testing.T) {
 	r := sampleReport()
 	r.Coverage.CoveragePercent = 80.0 // 80 < 90 → red path
 	var buf bytes.Buffer
-	WriteTable(&buf, r)
+	require.NoError(t, WriteTable(&buf, r))
 	assert.Contains(t, buf.String(), "80.0%")
 }
 
@@ -852,7 +875,7 @@ func TestWriteTable_MediumCoverageYellowPath(t *testing.T) {
 	r := sampleReport()
 	r.Coverage.CoveragePercent = 95.0 // 90 <= 95 < 99.9 → yellow path
 	var buf bytes.Buffer
-	WriteTable(&buf, r)
+	require.NoError(t, WriteTable(&buf, r))
 	assert.Contains(t, buf.String(), "95.0%")
 }
 

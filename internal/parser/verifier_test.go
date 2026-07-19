@@ -11,47 +11,6 @@ import (
 	"github.com/0xc0de1ab/vdexcli/internal/model"
 )
 
-// buildVerifierSection constructs a raw verifier-deps section with the given
-// per-dex blocks embedded at sectionOffset within the returned byte slice.
-// Each dex block contains: class offset table + LEB128 pairs + extra strings.
-func buildVerifierSection(sectionOffset int, blocks []verifierDexBlock) []byte {
-	dexCount := len(blocks)
-	// Phase 1: build per-dex payloads
-	payloads := make([][]byte, dexCount)
-	for i, b := range blocks {
-		payloads[i] = buildVerifierDexPayload(b)
-	}
-
-	// Phase 2: compute offsets (section-absolute)
-	perDexTable := make([]byte, dexCount*4)
-	cursor := dexCount * 4
-	for i, p := range payloads {
-		// 4-byte align
-		for cursor%4 != 0 {
-			cursor++
-		}
-		binary.LittleEndian.PutUint32(perDexTable[i*4:], uint32(cursor))
-		cursor += len(p)
-	}
-
-	// Phase 3: assemble section
-	section := make([]byte, cursor)
-	copy(section, perDexTable)
-	off := dexCount * 4
-	for _, p := range payloads {
-		for off%4 != 0 {
-			off++
-		}
-		copy(section[off:], p)
-		off += len(p)
-	}
-
-	// Embed at sectionOffset within a larger buffer
-	raw := make([]byte, sectionOffset+len(section))
-	copy(raw[sectionOffset:], section)
-	return raw
-}
-
 type verifierDexBlock struct {
 	classCount int
 	// per class: nil=unverified, empty=verified no pairs, non-empty=verified with pairs
@@ -371,8 +330,8 @@ func TestParseVerifierDex_InvalidLEB128(t *testing.T) {
 	badLEB := []byte{0x80, 0x80, 0x80, 0x80, 0x80, 0x80}
 
 	block := make([]byte, offsetTableSize)
-	binary.LittleEndian.PutUint32(block[0:], uint32(offsetTableSize))                  // class 0 offset
-	binary.LittleEndian.PutUint32(block[4:], uint32(offsetTableSize+len(badLEB)))       // sentinel
+	binary.LittleEndian.PutUint32(block[0:], uint32(offsetTableSize))             // class 0 offset
+	binary.LittleEndian.PutUint32(block[4:], uint32(offsetTableSize+len(badLEB))) // sentinel
 	block = append(block, badLEB...)
 	// pad + extra strings count = 0
 	for len(block)%4 != 0 {

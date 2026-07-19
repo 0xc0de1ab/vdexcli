@@ -85,7 +85,9 @@ func runExtractDex(cmd *cobra.Command, args []string) error {
 	case FormatJSONL:
 		return presenter.WriteJSONL(w, summary)
 	case FormatSummary:
-		presenter.WriteExtractSummary(w, summary)
+		if err := presenter.WriteExtractSummary(w, summary); err != nil {
+			return err
+		}
 	default:
 		fmt.Printf("extracted %d dex files to %s\n", res.Extracted, outDir)
 		if res.Failed > 0 {

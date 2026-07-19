@@ -548,4 +548,3 @@ func TestAppendModifyLog_WithDiffs(t *testing.T) {
 	assert.Equal(t, 2, entry.ModifiedClassCount)
 	assert.NotEmpty(t, entry.TopSamples)
 }
-

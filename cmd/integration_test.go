@@ -44,11 +44,11 @@ func buildSyntheticVerifierDeps(classDefsSize uint32) []byte {
 	sentinel := class2Start
 
 	// Per-dex offset: dex 0 data starts at offset numDex*4
-	binary.Write(&section, binary.LittleEndian, numDex*4)
+	writeUint32(&section, numDex*4)
 
 	classOffsets := []uint32{class0Start, 0xFFFFFFFF, class2Start, sentinel}
 	for _, off := range classOffsets {
-		binary.Write(&section, binary.LittleEndian, off)
+		writeUint32(&section, off)
 	}
 
 	section.Write(class0Data)
@@ -59,9 +59,9 @@ func buildSyntheticVerifierDeps(classDefsSize uint32) []byte {
 	}
 
 	// Extra strings: count=1
-	binary.Write(&section, binary.LittleEndian, uint32(1))
+	writeUint32(&section, 1)
 	stringDataOffset := uint32(section.Len()) + 4
-	binary.Write(&section, binary.LittleEndian, stringDataOffset)
+	writeUint32(&section, stringDataOffset)
 	section.WriteString("Ltest/Class;")
 	section.WriteByte(0)
 
@@ -73,7 +73,7 @@ func buildSyntheticVdex(dexData []byte, verifierDeps []byte) []byte {
 
 	buf.WriteString("vdex")
 	buf.WriteString("027\x00")
-	binary.Write(&buf, binary.LittleEndian, uint32(4))
+	writeUint32(&buf, 4)
 
 	headerSize := uint32(12)
 	sectionHeadersSize := uint32(48)
@@ -97,12 +97,12 @@ func buildSyntheticVdex(dexData []byte, verifierDeps []byte) []byte {
 		{3, typeLookupOffset, 0},
 	}
 	for _, s := range sections {
-		binary.Write(&buf, binary.LittleEndian, s.kind)
-		binary.Write(&buf, binary.LittleEndian, s.offset)
-		binary.Write(&buf, binary.LittleEndian, s.size)
+		writeUint32(&buf, s.kind)
+		writeUint32(&buf, s.offset)
+		writeUint32(&buf, s.size)
 	}
 
-	binary.Write(&buf, binary.LittleEndian, uint32(0xDEADBEEF))
+	writeUint32(&buf, 0xDEADBEEF)
 	buf.Write(dexData)
 
 	for buf.Len() < int(verifierOffset) {
@@ -111,6 +111,10 @@ func buildSyntheticVdex(dexData []byte, verifierDeps []byte) []byte {
 	buf.Write(verifierDeps)
 
 	return buf.Bytes()
+}
+
+func writeUint32(buf *bytes.Buffer, value uint32) {
+	buf.Write(binary.LittleEndian.AppendUint32(nil, value))
 }
 
 func TestParseVdex_VerifierDeps(t *testing.T) {
@@ -224,7 +228,9 @@ func TestRealVdexFiles_Android16(t *testing.T) {
 
 	tarFile, err := os.Open(tarPath)
 	require.NoError(t, err)
-	defer tarFile.Close()
+	t.Cleanup(func() {
+		require.NoError(t, tarFile.Close())
+	})
 
 	tr := tar.NewReader(tarFile)
 	totalFiles, passFiles, dmFiles := 0, 0, 0

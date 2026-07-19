@@ -10,16 +10,6 @@ import (
 	"github.com/0xc0de1ab/vdexcli/internal/model"
 )
 
-// mockReportWriter verifies ReportWriter can be mocked.
-type mockReportWriter struct {
-	called bool
-}
-
-func (m *mockReportWriter) Write(_ *bytes.Buffer, _ *model.VdexReport) error {
-	m.called = true
-	return nil
-}
-
 func TestReportWriter_JSONWriter(t *testing.T) {
 	var w ReportWriter = JSONWriter{}
 	var buf bytes.Buffer
@@ -77,10 +67,10 @@ func TestWarningProcessor_Default(t *testing.T) {
 func TestSummaryWriter_Default(t *testing.T) {
 	var sw SummaryWriter = DefaultSummaryWriter{}
 	var buf bytes.Buffer
-	sw.WriteModify(&buf, model.ModifySummary{Status: "ok"})
+	require.NoError(t, sw.WriteModify(&buf, model.ModifySummary{Status: "ok"}))
 	assert.Contains(t, buf.String(), "status=ok")
 
 	buf.Reset()
-	sw.WriteExtract(&buf, model.ExtractSummary{Extracted: 3})
+	require.NoError(t, sw.WriteExtract(&buf, model.ExtractSummary{Extracted: 3}))
 	assert.Contains(t, buf.String(), "extracted=3")
 }

@@ -76,9 +76,10 @@ func Parse(raw []byte, fileOffset int) (*model.DexContext, int, error) {
 	}
 
 	endianTag := binutil.ReadU32(raw, 0x28)
-	if endianTag == 0x12345678 {
+	switch endianTag {
+	case 0x12345678:
 		ctx.Rep.Endian = "little-endian"
-	} else if endianTag == 0x78563412 {
+	case 0x78563412:
 		ctx.Rep.Endian = "big-endian"
 	}
 

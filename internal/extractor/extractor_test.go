@@ -200,9 +200,9 @@ func TestExtractor_MkdirAllFails(t *testing.T) {
 
 type failMkdirFS struct{}
 
-func (failMkdirFS) MkdirAll(_ string, _ os.FileMode) error        { return fmt.Errorf("mkdir failed") }
+func (failMkdirFS) MkdirAll(_ string, _ os.FileMode) error            { return fmt.Errorf("mkdir failed") }
 func (failMkdirFS) WriteFile(_ string, _ []byte, _ os.FileMode) error { return nil }
-func (failMkdirFS) Stat(_ string) (os.FileInfo, error)            { return nil, os.ErrNotExist }
+func (failMkdirFS) Stat(_ string) (os.FileInfo, error)                { return nil, os.ErrNotExist }
 
 func TestExtractor_RendererError_Stops(t *testing.T) {
 	fs := newMockFS()
@@ -256,9 +256,11 @@ func TestExtractor_WriteFileFails_Stops(t *testing.T) {
 
 type failWriteFS struct{}
 
-func (failWriteFS) MkdirAll(_ string, _ os.FileMode) error            { return nil }
-func (failWriteFS) WriteFile(_ string, _ []byte, _ os.FileMode) error { return fmt.Errorf("write failed") }
-func (failWriteFS) Stat(_ string) (os.FileInfo, error)                { return nil, os.ErrNotExist }
+func (failWriteFS) MkdirAll(_ string, _ os.FileMode) error { return nil }
+func (failWriteFS) WriteFile(_ string, _ []byte, _ os.FileMode) error {
+	return fmt.Errorf("write failed")
+}
+func (failWriteFS) Stat(_ string) (os.FileInfo, error) { return nil, os.ErrNotExist }
 
 func TestExtractor_UniquePathCollision(t *testing.T) {
 	// First path already exists on FS → should append _1

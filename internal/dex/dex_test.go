@@ -315,7 +315,7 @@ func TestParse_StringTableError(t *testing.T) {
 
 func TestParse_ClassDefsTableError(t *testing.T) {
 	// Valid header, no strings, but class_defs_off points out of range
-	raw := buildMinDex(3) // 3 class defs
+	raw := buildMinDex(3)                           // 3 class defs
 	binary.LittleEndian.PutUint32(raw[0x64:], 0xFF) // class_defs_off beyond file
 	ctx, _, err := Parse(raw, 0)
 	require.Error(t, err)
@@ -332,8 +332,8 @@ func TestParseSection_CursorExceedsEnd(t *testing.T) {
 	raw := make([]byte, 200)
 	copy(raw[60:], dex)
 	s := model.VdexSection{Offset: 60, Size: 0x71} // 113 bytes, 1 extra
-	ctxs, diags := ParseSection(raw, s, 0) // expected=0 auto-detect
-	assert.Len(t, ctxs, 1) // first dex parsed
+	ctxs, diags := ParseSection(raw, s, 0)         // expected=0 auto-detect
+	assert.Len(t, ctxs, 1)                         // first dex parsed
 	// Second iteration should hit truncation
 	hasTrunc := false
 	for _, d := range diags {
@@ -356,7 +356,7 @@ func TestParseClassDefs_InvalidClassIdx(t *testing.T) {
 	// class_idx points beyond type_ids → should show <invalid>
 	strs := []string{"Ljava/lang/Object;"}
 	raw := make([]byte, 40)
-	binary.LittleEndian.PutUint32(raw[0:], 0) // type_id[0]
+	binary.LittleEndian.PutUint32(raw[0:], 0)  // type_id[0]
 	binary.LittleEndian.PutUint32(raw[8:], 99) // class_def[0].class_idx=99, but only 1 type
 	classes, err := ParseClassDefs(raw, strs, 1, 0, 8, 1)
 	require.NoError(t, err)

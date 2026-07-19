@@ -1,6 +1,6 @@
 module github.com/0xc0de1ab/vdexcli
 
-go 1.25.7
+go 1.25.11
 
 require (
 	github.com/dh-kam/refutils v0.9.1-202603.1

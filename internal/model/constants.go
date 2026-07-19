@@ -7,12 +7,12 @@ var CLIVersion = "0.4.0"
 var GitCommit = "dev"
 
 const (
-	VdexCurrentVersion  = "027"
+	VdexCurrentVersion   = "027"
 	VdexMinLegacyVersion = "021"
 	VdexMaxLegacyVersion = "026"
-	NotVerifiedMarker   = uint32(0xFFFFFFFF)
-	VdexSchemaVersion   = "1.0.0"
-	DefaultNameTemplate = "{base}_{index}_{checksum}.dex"
+	NotVerifiedMarker    = uint32(0xFFFFFFFF)
+	VdexSchemaVersion    = "1.0.0"
+	DefaultNameTemplate  = "{base}_{index}_{checksum}.dex"
 
 	SectionChecksum     = 0
 	SectionDex          = 1

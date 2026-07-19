@@ -23,8 +23,6 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic(err)
 	}
-	defer os.RemoveAll(tmp)
-
 	testBinary = filepath.Join(tmp, "vdexcli")
 	out, err := exec.Command("go", "build", "-o", testBinary, "..").CombinedOutput()
 	if err != nil {
@@ -54,7 +52,11 @@ func TestMain(m *testing.M) {
 		panic("modify failed: " + string(out))
 	}
 
-	os.Exit(m.Run())
+	code := m.Run()
+	if err := os.RemoveAll(tmp); err != nil {
+		panic(err)
+	}
+	os.Exit(code)
 }
 
 func runCLI(t *testing.T, args ...string) (stdout, stderr string, exitCode int) {

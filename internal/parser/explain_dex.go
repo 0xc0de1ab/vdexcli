@@ -84,7 +84,7 @@ func annotateMapList(r *AnnotatedReader, raw []byte, secName string, secOff, sec
 		_ = r.ReadUint16LE(prefix+".unused", "Map item padding",
 			"Unused padding field (always 0).")
 		itemCount := r.ReadUint32LE(prefix+".count", "Map item count",
-			fmt.Sprintf("Number of items of this section type."))
+			"Number of items of this section type.")
 		itemOff := r.ReadUint32LE(prefix+".offset", "Map item offset",
 			fmt.Sprintf("File offset where these %d items begin.", itemCount))
 
