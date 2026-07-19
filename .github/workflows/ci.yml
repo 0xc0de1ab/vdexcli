@@ -8,6 +8,8 @@ on:
       - "docs/**"
       - "LICENSE"
       - ".github/ISSUE_TEMPLATE/**"
+  pull_request:
+    branches: [main]
   workflow_dispatch:
     inputs:
       skip_cache:
