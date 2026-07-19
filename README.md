@@ -732,3 +732,9 @@ Batch: **166 files in 1.4 seconds** (including DM format class inference).
 - [Bug reports](https://github.com/0xc0de1ab/vdexcli/issues/new?template=bug_report.md)
 - [Feature requests](https://github.com/0xc0de1ab/vdexcli/issues/new?template=feature_request.md)
 - [Discussions](https://github.com/0xc0de1ab/vdexcli/discussions)
+
+---
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
