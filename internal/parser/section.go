@@ -1,10 +1,28 @@
 package parser
 
 import (
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 
 	"github.com/0xc0de1ab/vdexcli/internal/model"
 )
+
+func contentHash(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func validByteRange(dataLen int, offset, size uint32) bool {
+	return uint64(offset)+uint64(size) <= uint64(dataLen)
+}
+
+func sectionBounds(dataLen int, s model.VdexSection) (int, int, bool) {
+	if !validByteRange(dataLen, s.Offset, s.Size) {
+		return 0, 0, false
+	}
+	return int(s.Offset), int(uint64(s.Offset) + uint64(s.Size)), true
+}
 
 // ParseSections reads the section header table from raw bytes starting at
 // offset 12 (right after the VdexFileHeader). Each entry is 12 bytes:

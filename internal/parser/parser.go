@@ -24,6 +24,7 @@ func ParseVdexBytes(data []byte, includeMeanings bool) (*model.VdexReport, []byt
 		File:          "",
 		Size:          len(raw),
 		SchemaVersion: model.VdexSchemaVersion,
+		ContentHash:   contentHash(raw),
 	}
 	if includeMeanings {
 		r.Meanings = NewParserMeanings()
@@ -49,12 +50,13 @@ func ParseVdexBytes(data []byte, includeMeanings bool) (*model.VdexReport, []byt
 		r.AddDiag(model.DiagVersionMismatch(model.VdexCurrentVersion, r.Header.Version))
 	}
 
-	headerEnd := int(12 + r.Header.NumSections*12)
-	if len(raw) < headerEnd {
-		d := model.DiagSectionTableTruncated(headerEnd, len(raw))
+	headerEnd64 := uint64(12) + uint64(r.Header.NumSections)*12
+	if headerEnd64 > uint64(len(raw)) {
+		d := model.DiagSectionTableTruncated(headerEnd64, len(raw))
 		r.AddDiag(d)
 		return r, raw, d
 	}
+	headerEnd := int(headerEnd64)
 
 	sections, secIndex, secDiags := ParseSections(raw[12:headerEnd], r.Header.NumSections)
 	r.AddDiags(secDiags)
@@ -127,7 +129,7 @@ func parseChecksums(raw []byte, sections []model.VdexSection, secIndex map[uint3
 		return nil
 	}
 	s := sections[idx]
-	if s.Offset+s.Size > uint32(len(raw)) {
+	if !validByteRange(len(raw), s.Offset, s.Size) {
 		r.AddDiag(model.DiagChecksumExceedsFile())
 		return nil
 	}

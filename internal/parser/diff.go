@@ -1,12 +1,17 @@
 package parser
 
-import "github.com/0xc0de1ab/vdexcli/internal/model"
+import (
+	"reflect"
+
+	"github.com/0xc0de1ab/vdexcli/internal/model"
+)
 
 // Diff compares two parsed VDEX reports and returns a structured diff.
 func Diff(a, b *model.VdexReport) model.VdexDiff {
 	d := model.VdexDiff{
 		FileA: a.File, FileB: b.File,
 		SizeA: a.Size, SizeB: b.Size,
+		ContentChanged: reportsContentChanged(a, b),
 	}
 
 	d.HeaderDiff, d.HeaderChanged = diffHeaders(a.Header, b.Header)
@@ -21,7 +26,7 @@ func Diff(a, b *model.VdexReport) model.VdexDiff {
 }
 
 func diffHeaders(a, b model.VdexHeader) (*model.HeaderDiff, bool) {
-	if a.Magic == b.Magic && a.Version == b.Version {
+	if a.Magic == b.Magic && a.Version == b.Version && a.NumSections == b.NumSections {
 		return nil, false
 	}
 	h := &model.HeaderDiff{}
@@ -32,6 +37,10 @@ func diffHeaders(a, b model.VdexHeader) (*model.HeaderDiff, bool) {
 	if a.Version != b.Version {
 		h.VersionA = a.Version
 		h.VersionB = b.Version
+	}
+	if a.NumSections != b.NumSections {
+		h.NumSectionsA = a.NumSections
+		h.NumSectionsB = b.NumSections
 	}
 	return h, true
 }
@@ -136,15 +145,16 @@ func diffVerifier(a, b *model.VerifierReport) *model.VerifierDiffInfo {
 	}
 	ad := safeVerifierDexes(a)
 	bd := safeVerifierDexes(b)
+	contentChanged := safeVerifierHash(a) != safeVerifierHash(b)
 	maxLen := len(ad)
 	if len(bd) > maxLen {
 		maxLen = len(bd)
 	}
-	if maxLen == 0 {
+	if maxLen == 0 && !contentChanged {
 		return nil
 	}
 
-	info := &model.VerifierDiffInfo{DexCount: maxLen}
+	info := &model.VerifierDiffInfo{DexCount: maxLen, ContentChanged: contentChanged}
 	for i := 0; i < maxLen; i++ {
 		va := safeVerifierDexReport(ad, i)
 		vb := safeVerifierDexReport(bd, i)
@@ -154,17 +164,25 @@ func diffVerifier(a, b *model.VerifierReport) *model.VerifierDiffInfo {
 			UnverifiedA: va.UnverifiedClasses, UnverifiedB: vb.UnverifiedClasses,
 			PairsA: va.AssignabilityPairs, PairsB: vb.AssignabilityPairs,
 			ExtraStringsA: va.ExtraStringCount, ExtraStringsB: vb.ExtraStringCount,
-			VerifiedDelta: vb.VerifiedClasses - va.VerifiedClasses,
-			PairsDelta:    vb.AssignabilityPairs - va.AssignabilityPairs,
+			VerifiedDelta:  vb.VerifiedClasses - va.VerifiedClasses,
+			PairsDelta:     vb.AssignabilityPairs - va.AssignabilityPairs,
+			ContentChanged: !reflect.DeepEqual(va.FirstPairs, vb.FirstPairs),
 		}
 		if dd.VerifiedDelta != 0 || dd.PairsDelta != 0 ||
 			va.UnverifiedClasses != vb.UnverifiedClasses ||
-			va.ExtraStringCount != vb.ExtraStringCount {
+			va.ExtraStringCount != vb.ExtraStringCount || dd.ContentChanged {
 			info.DexDiffs = append(info.DexDiffs, dd)
-			info.TotalChanged += abs(dd.VerifiedDelta)
+			changed := abs(dd.VerifiedDelta)
+			if changed == 0 {
+				changed = 1
+			}
+			info.TotalChanged += changed
 		}
 	}
-	if len(info.DexDiffs) == 0 {
+	if contentChanged && info.TotalChanged == 0 {
+		info.TotalChanged = 1
+	}
+	if len(info.DexDiffs) == 0 && !contentChanged {
 		return nil
 	}
 	return info
@@ -176,15 +194,16 @@ func diffTypeLookup(a, b *model.TypeLookupReport) *model.TypeLookupDiffInfo {
 	}
 	ad := safeTypeLookupDexes(a)
 	bd := safeTypeLookupDexes(b)
+	contentChanged := safeTypeLookupHash(a) != safeTypeLookupHash(b)
 	maxLen := len(ad)
 	if len(bd) > maxLen {
 		maxLen = len(bd)
 	}
-	if maxLen == 0 {
+	if maxLen == 0 && !contentChanged {
 		return nil
 	}
 
-	info := &model.TypeLookupDiffInfo{DexCount: maxLen}
+	info := &model.TypeLookupDiffInfo{DexCount: maxLen, ContentChanged: contentChanged}
 	for i := 0; i < maxLen; i++ {
 		ta := safeTypeLookupDexReport(ad, i)
 		tb := safeTypeLookupDexReport(bd, i)
@@ -192,13 +211,14 @@ func diffTypeLookup(a, b *model.TypeLookupReport) *model.TypeLookupDiffInfo {
 			DexIndex: i,
 			BucketsA: ta.BucketCount, BucketsB: tb.BucketCount,
 			EntriesA: ta.EntryCount, EntriesB: tb.EntryCount,
-			EntriesDelta: tb.EntryCount - ta.EntryCount,
+			EntriesDelta:   tb.EntryCount - ta.EntryCount,
+			ContentChanged: !reflect.DeepEqual(ta, tb),
 		}
-		if dd.EntriesDelta != 0 || ta.BucketCount != tb.BucketCount {
+		if dd.EntriesDelta != 0 || ta.BucketCount != tb.BucketCount || dd.ContentChanged {
 			info.DexDiffs = append(info.DexDiffs, dd)
 		}
 	}
-	if len(info.DexDiffs) == 0 {
+	if len(info.DexDiffs) == 0 && !contentChanged {
 		return nil
 	}
 	return info
@@ -217,13 +237,27 @@ func buildSummary(d model.VdexDiff) model.DiffSummary {
 	}
 	if d.TypeLookupDiff != nil {
 		for _, dd := range d.TypeLookupDiff.DexDiffs {
-			s.TypeLookupChanged += abs(dd.EntriesDelta)
+			changed := abs(dd.EntriesDelta)
+			if changed == 0 {
+				changed = 1
+			}
+			s.TypeLookupChanged += changed
+		}
+		if d.TypeLookupDiff.ContentChanged && s.TypeLookupChanged == 0 {
+			s.TypeLookupChanged = 1
 		}
 	}
 	s.Identical = !d.HeaderChanged && s.SectionsChanged == 0 && s.ChecksumsChanged == 0 &&
 		s.DexFilesChanged == 0 && s.VerifierChanged == 0 && s.TypeLookupChanged == 0 &&
-		d.SizeA == d.SizeB
+		d.SizeA == d.SizeB && !d.ContentChanged
 	return s
+}
+
+func reportsContentChanged(a, b *model.VdexReport) bool {
+	if a.ContentHash == "" && b.ContentHash == "" {
+		return false
+	}
+	return a.ContentHash != b.ContentHash
 }
 
 func safeVerifierDexes(r *model.VerifierReport) []model.VerifierDexReport {
@@ -231,6 +265,13 @@ func safeVerifierDexes(r *model.VerifierReport) []model.VerifierDexReport {
 		return nil
 	}
 	return r.Dexes
+}
+
+func safeVerifierHash(r *model.VerifierReport) string {
+	if r == nil {
+		return ""
+	}
+	return r.ContentHash
 }
 
 func safeVerifierDexReport(dexes []model.VerifierDexReport, i int) model.VerifierDexReport {
@@ -245,6 +286,13 @@ func safeTypeLookupDexes(r *model.TypeLookupReport) []model.TypeLookupDexReport 
 		return nil
 	}
 	return r.Dexes
+}
+
+func safeTypeLookupHash(r *model.TypeLookupReport) string {
+	if r == nil {
+		return ""
+	}
+	return r.ContentHash
 }
 
 func safeTypeLookupDexReport(dexes []model.TypeLookupDexReport, i int) model.TypeLookupDexReport {

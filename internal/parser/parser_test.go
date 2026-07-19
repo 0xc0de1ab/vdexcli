@@ -239,6 +239,16 @@ func TestParseVdex_FileTooSmall(t *testing.T) {
 	assert.Contains(t, report.Errors[0], "file too small for VDEX header")
 }
 
+func TestParseVdex_NumSectionsOverflow(t *testing.T) {
+	raw := buildRawHeader("vdex", "027\x00", 0x40000000)
+
+	report, _, err := ParseVdexBytes(raw, false)
+
+	require.Error(t, err)
+	require.NotNil(t, report)
+	assert.Contains(t, err.Error(), "section header table")
+}
+
 func TestParseVdex_TruncatedSectionTable(t *testing.T) {
 	header := buildRawHeader("vdex", "027\x00", 4) // claims 4 sections
 	// Only provide 1 section header (12 bytes) instead of 4 (48 bytes)
@@ -535,8 +545,8 @@ func TestParseVdex_DiagnosticsAndWarningsInSync(t *testing.T) {
 	var sectionBuf []byte
 	sectionBuf = appendSectionHeader(sectionBuf, 0, 60, 5) // odd size → alignment warning
 	sectionBuf = appendSectionHeader(sectionBuf, 1, 0, 0)  // zero size
-	sectionBuf = appendSectionHeader(sectionBuf, 2, 65, 0)  // zero size
-	sectionBuf = appendSectionHeader(sectionBuf, 3, 65, 0)  // zero size
+	sectionBuf = appendSectionHeader(sectionBuf, 2, 65, 0) // zero size
+	sectionBuf = appendSectionHeader(sectionBuf, 3, 65, 0) // zero size
 	raw := append(header, sectionBuf...)
 	raw = append(raw, 0, 0, 0, 0, 0) // 5 bytes checksum
 	tmpFile := filepath.Join(t.TempDir(), "diag_sync.vdex")

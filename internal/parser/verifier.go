@@ -16,12 +16,12 @@ func ParseVerifierSection(raw []byte, s model.VdexSection, dexes []*model.DexCon
 		Size:   s.Size,
 	}
 	var diags []model.ParseDiagnostic
-	start := int(s.Offset)
-	end := start + int(s.Size)
-	if start < 0 || end > len(raw) {
+	start, end, ok := sectionBounds(len(raw), s)
+	if !ok {
 		diags = append(diags, model.DiagVerifierSectionRange())
 		return out, diags
 	}
+	out.ContentHash = contentHash(raw[start:end])
 	if expected == 0 {
 		expected = len(dexes)
 	}

@@ -26,5 +26,8 @@ func ExplainBytes(data []byte) (*FieldMap, error) {
 func ParseBytes(data []byte, opts ...Option) (*Report, error) {
 	cfg := applyOptions(opts)
 	r, _, err := parser.ParseVdexBytes(data, cfg.includeMeanings)
+	if r != nil && cfg.maxDexPreview >= 0 && len(r.Dexes) > cfg.maxDexPreview {
+		r.Dexes = r.Dexes[:cfg.maxDexPreview]
+	}
 	return r, err
 }

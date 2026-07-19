@@ -24,6 +24,11 @@ type FieldMap = model.PrimitiveMap
 // ByteRange marks an unexplained [Start, End) byte range within the file.
 type ByteRange = model.ByteRange
 
+// Version returns the vdexcli engine version embedded at build time.
+func Version() string {
+	return model.CLIVersion
+}
+
 // Report is the high-level parsed VDEX report produced by Parse*.
 // It contains the VDEX header, sections, checksums, DEX metadata,
 // verifier dependency statistics, and byte-level coverage analysis.

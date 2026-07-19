@@ -53,6 +53,7 @@ func ParseVdexLegacyBytes(data []byte, includeMeanings bool) (*model.VdexReport,
 		File:          "",
 		Size:          len(raw),
 		SchemaVersion: model.VdexSchemaVersion,
+		ContentHash:   contentHash(raw),
 	}
 	if includeMeanings {
 		r.Meanings = NewParserMeanings()

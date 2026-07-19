@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { UploadCloud, FileJson, Loader2, Database, AlertCircle } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { UploadCloud, FileJson, Loader2, Database, AlertCircle, RotateCcw } from 'lucide-react';
 
 interface Field {
   offset: number;
@@ -12,8 +12,8 @@ interface Field {
 }
 
 interface Gap {
-  offset: number;
-  size: number;
+  start: number;
+  end: number;
 }
 
 interface PrimitiveMap {
@@ -22,14 +22,29 @@ interface PrimitiveMap {
   unmapped_gaps: Gap[];
 }
 
+interface VdexError {
+  error: string;
+}
+
 // Ensure TypeScript knows about window.vdex
 declare global {
   interface Window {
     vdex?: {
-      explain: (data: Uint8Array) => string | PrimitiveMap;
+      explain: (data: Uint8Array) => string | PrimitiveMap | VdexError;
     };
+    vdexReady?: Promise<void>;
   }
 }
+
+const isVdexError = (value: unknown): value is VdexError =>
+  typeof value === 'object' && value !== null &&
+  'error' in value && typeof (value as VdexError).error === 'string';
+
+const isPrimitiveMap = (value: unknown): value is PrimitiveMap =>
+  typeof value === 'object' && value !== null &&
+  typeof (value as PrimitiveMap).total_bytes === 'number' &&
+  Array.isArray((value as PrimitiveMap).fields) &&
+  Array.isArray((value as PrimitiveMap).unmapped_gaps);
 
 const formatBytes = (bytes: number): string => {
   if (bytes === 0) return '0 B';
@@ -49,59 +64,44 @@ export default function App() {
   const [data, setData] = useState<PrimitiveMap | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string>('');
+  const [engineStatus, setEngineStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+
+  useEffect(() => {
+    const ready = window.vdexReady;
+    if (!ready) {
+      setEngineStatus('error');
+      setError('WASM loader was not initialized');
+      return;
+    }
+    ready.then(() => setEngineStatus('ready')).catch((err: unknown) => {
+      setEngineStatus('error');
+      setError(err instanceof Error ? err.message : 'Failed to load WASM engine');
+    });
+  }, []);
 
   const processFile = async (file: File) => {
     setFileName(file.name);
     setIsProcessing(true);
     setError(null);
+    setData(null);
     
     try {
       const buffer = await file.arrayBuffer();
       const uint8Array = new Uint8Array(buffer);
       
-      // Try to call WASM module if available
-      if (window.vdex && window.vdex.explain) {
-        console.log("Calling window.vdex.explain...");
-        const result = window.vdex.explain(uint8Array);
-        
-        let parsedResult: PrimitiveMap;
-        if (typeof result === 'string') {
-          parsedResult = JSON.parse(result);
-        } else {
-          parsedResult = result;
-        }
-        setData(parsedResult);
-      } else {
-        console.warn("window.vdex.explain not found, using mock data");
-        // Mock data
-        setTimeout(() => {
-          setData({
-            total_bytes: uint8Array.length,
-            fields: [
-              {
-                offset: 0, size: 4, type: "string",
-                raw_bytes: [118, 100, 101, 120], parsed_value: "vdex",
-                logical_path: "vdex.header.magic", description: "VDEX Magic Signature"
-              },
-              {
-                offset: 4, size: 4, type: "string",
-                raw_bytes: [48, 50, 49, 0], parsed_value: "021",
-                logical_path: "vdex.header.version", description: "VDEX Version (e.g. 021 for Oreo)"
-              },
-              {
-                offset: 8, size: 4, type: "uint32",
-                raw_bytes: [2, 0, 0, 0], parsed_value: 2,
-                logical_path: "vdex.header.number_of_dex_files", description: "Number of DEX files"
-              }
-            ],
-            unmapped_gaps: [
-              { offset: 12, size: uint8Array.length - 12 }
-            ]
-          });
-          setIsProcessing(false);
-        }, 1000);
-        return; // wait for timeout
+      await window.vdexReady;
+      if (!window.vdex?.explain) {
+        throw new Error('VDEX WASM API is unavailable');
       }
+      const result = window.vdex.explain(uint8Array);
+      const parsedResult: unknown = typeof result === 'string' ? JSON.parse(result) : result;
+      if (isVdexError(parsedResult)) {
+        throw new Error(parsedResult.error);
+      }
+      if (!isPrimitiveMap(parsedResult)) {
+        throw new Error('WASM returned an invalid analysis result');
+      }
+      setData(parsedResult);
     } catch (err) {
       console.error(err);
       setError(err instanceof Error ? err.message : "Failed to process file");
@@ -140,7 +140,14 @@ export default function App() {
         <p>Drop a compiled Android VDEX file to analyze its internal structure</p>
       </header>
 
-      {!data && !isProcessing && (
+      {engineStatus === 'loading' && !data && !isProcessing && (
+        <div className="glass-panel loading">
+          <Loader2 size={32} className="spinner" />
+          <p>Loading analysis engine...</p>
+        </div>
+      )}
+
+      {engineStatus === 'ready' && !data && !isProcessing && (
         <div className="glass-panel">
           <label 
             className={`dropzone ${isDragging ? 'active' : ''}`}
@@ -148,7 +155,7 @@ export default function App() {
             onDragLeave={onDragLeave}
             onDrop={onDrop}
           >
-            <input type="file" style={{ display: 'none' }} onChange={onFileInput} />
+            <input type="file" accept=".vdex,.dm,application/octet-stream" style={{ display: 'none' }} onChange={onFileInput} />
             <UploadCloud size={48} color={isDragging ? "#3b82f6" : "#94a3b8"} />
             <p>{isDragging ? "Drop it here!" : "Drag and drop a .vdex file, or click to select"}</p>
           </label>
@@ -187,9 +194,9 @@ export default function App() {
             <button 
               className="glass-panel" 
               style={{ cursor: 'pointer', textAlign: 'center', transition: 'all 0.2s', padding: '1rem' }}
-              onClick={() => setData(null)}
+              onClick={() => { setData(null); setError(null); }}
             >
-              Analyze Another File
+              <RotateCcw size={18} aria-hidden="true" /> Analyze Another File
             </button>
           </div>
 
@@ -228,7 +235,7 @@ export default function App() {
                   </div>
                   <div className="field-data">
                     <span className="field-meta">
-                      0x{toHex(gap.offset, 4)} ({gap.size} bytes)
+                      0x{toHex(gap.start, 4)} ({gap.end - gap.start} bytes)
                     </span>
                   </div>
                 </div>

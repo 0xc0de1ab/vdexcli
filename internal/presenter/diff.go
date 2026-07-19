@@ -21,6 +21,10 @@ func WriteDiffText(w io.Writer, d model.VdexDiff) {
 	if d.SizeA != d.SizeB {
 		fmt.Fprintf(w, "  size delta: %s\n", c(yellow, fmt.Sprintf("%+d bytes", d.SizeB-d.SizeA)))
 	}
+	if d.ContentChanged && !d.HeaderChanged && len(d.SectionDiffs) == 0 && d.ChecksumDiff == nil &&
+		len(d.DexDiffs) == 0 && d.VerifierDiff == nil && d.TypeLookupDiff == nil {
+		fmt.Fprintln(w, "  file content changed outside parsed structures")
+	}
 	fmt.Fprintln(w)
 
 	if d.HeaderChanged && d.HeaderDiff != nil {
@@ -31,6 +35,9 @@ func WriteDiffText(w io.Writer, d model.VdexDiff) {
 		}
 		if h.VersionA != "" {
 			fmt.Fprintf(w, "  version: %s → %s\n", c(red, h.VersionA), c(green, h.VersionB))
+		}
+		if h.NumSectionsA != h.NumSectionsB {
+			fmt.Fprintf(w, "  sections: %d → %d\n", h.NumSectionsA, h.NumSectionsB)
 		}
 		fmt.Fprintln(w)
 	}
@@ -89,6 +96,9 @@ func WriteDiffText(w io.Writer, d model.VdexDiff) {
 				vd.PairsA, vd.PairsB, colorDelta(vd.PairsDelta),
 				vd.ExtraStringsA, vd.ExtraStringsB)
 		}
+		if d.VerifierDiff.ContentChanged && len(d.VerifierDiff.DexDiffs) == 0 {
+			fmt.Fprintln(w, "  section content changed")
+		}
 		fmt.Fprintln(w)
 	}
 
@@ -99,6 +109,9 @@ func WriteDiffText(w io.Writer, d model.VdexDiff) {
 				td.DexIndex,
 				td.BucketsA, td.BucketsB,
 				td.EntriesA, td.EntriesB, colorDelta(td.EntriesDelta))
+		}
+		if d.TypeLookupDiff.ContentChanged && len(d.TypeLookupDiff.DexDiffs) == 0 {
+			fmt.Fprintln(w, "  section content changed")
 		}
 		fmt.Fprintln(w)
 	}

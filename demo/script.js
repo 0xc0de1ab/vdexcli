@@ -178,6 +178,7 @@ async function processFile(file) {
     ]);
 
     if (explainResult.error) throw new Error(explainResult.error);
+    if (parseResult.error) throw new Error(parseResult.error);
     currentFieldMap = explainResult;
     currentReport   = parseResult;
 

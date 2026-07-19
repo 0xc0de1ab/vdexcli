@@ -88,19 +88,20 @@ func runModify(cmd *cobra.Command, args []string) error {
 	}
 
 	// Step 3: Build new verifier payload.
-	section, raw, newPayload, err := buildAndRelayout(report, raw, patch)
+	originalRaw := raw
+	originalSection, outputSection, raw, newPayload, err := buildAndRelayout(report, raw, patch)
 	if err != nil {
 		return err
 	}
 
 	// Step 4: Compare old vs new.
-	diff, dexDiffs, compareErr := compareSections(report, raw, section, newPayload)
+	diff, dexDiffs, compareErr := compareSections(report, originalRaw, originalSection, newPayload)
 
 	// Step 5: Build summary, apply strict, write output.
 	patchStats := countPatchStats(patch)
-	summary := buildModifySummary(inPath, outPath, patch, patchStats, report, section, newPayload, diff, dexDiffs, m, parseErr, compareErr)
+	summary := buildModifySummary(inPath, outPath, patch, patchStats, report, originalSection, newPayload, diff, dexDiffs, m, parseErr, compareErr)
 	strictMatched := applyStrictModify(cmd, report, &summary)
-	writeErr := writeOutput(raw, section, newPayload, outPath, &summary, m)
+	writeErr := writeOutput(raw, outputSection, newPayload, outPath, &summary, m)
 
 	// Step 6: Classify failure.
 	failureReason, failureCategory := classifyFailure(summary, parseErr, compareErr, writeErr, strictMatched)
@@ -112,7 +113,7 @@ func runModify(cmd *cobra.Command, args []string) error {
 	}
 
 	// Step 8: Render output.
-	return renderModifyOutput(cmd, summary, section, newPayload, failureCategory, failureReason, strictMatched, report, m, parseErr, compareErr, writeErr)
+	return renderModifyOutput(cmd, summary, originalSection, newPayload, failureCategory, failureReason, strictMatched, report, m, parseErr, compareErr, writeErr)
 }
 
 // parseInput reads and parses the VDEX file, recording parse errors.
@@ -147,28 +148,33 @@ func loadPatch(m ModifyOpts, report *model.VdexReport) (model.VerifierPatchSpec,
 }
 
 // buildAndRelayout builds the new payload and relayouts the file if needed.
-func buildAndRelayout(report *model.VdexReport, raw []byte, patch model.VerifierPatchSpec) (model.VdexSection, []byte, []byte, error) {
+func buildAndRelayout(report *model.VdexReport, raw []byte, patch model.VerifierPatchSpec) (model.VdexSection, model.VdexSection, []byte, []byte, error) {
 	section, err := findVerifierSection(report, raw)
 	if err != nil {
-		return section, raw, nil, err
+		return section, section, raw, nil, err
 	}
+	originalSection := section
 
 	newPayload, buildWarn, err := buildPayload(report, raw, section, patch)
 	report.Warnings = append(report.Warnings, buildWarn...)
 	if err != nil {
-		return section, raw, nil, err
+		return originalSection, section, raw, nil, err
 	}
 
 	if len(newPayload) > int(section.Size) {
-		raw = modifier.RelayoutVdex(raw, report.Sections, model.SectionVerifierDeps, newPayload)
-		newSections, _, _ := parser.ParseSections(raw[12:12+report.Header.NumSections*12], report.Header.NumSections)
+		raw, err = modifier.RelayoutVdex(raw, report.Sections, model.SectionVerifierDeps, newPayload)
+		if err != nil {
+			return originalSection, section, raw, nil, err
+		}
+		tableEnd := 12 + len(report.Sections)*12
+		newSections, _, _ := parser.ParseSections(raw[12:tableEnd], report.Header.NumSections)
 		report.Sections = newSections
 		section, err = findVerifierSection(report, raw)
 		if err != nil {
-			return section, raw, nil, err
+			return originalSection, section, raw, nil, err
 		}
 	}
-	return section, raw, newPayload, nil
+	return originalSection, section, raw, newPayload, nil
 }
 
 // compareSections runs the diff between original and patched verifier data.
@@ -259,7 +265,7 @@ func countPatchStats(patch model.VerifierPatchSpec) patchStats {
 func findVerifierSection(report *model.VdexReport, raw []byte) (model.VdexSection, error) {
 	for _, s := range report.Sections {
 		if s.Kind == model.SectionVerifierDeps {
-			if int(s.Offset)+int(s.Size) > len(raw) {
+			if uint64(s.Offset)+uint64(s.Size) > uint64(len(raw)) {
 				return s, fmt.Errorf("verifier section points outside file")
 			}
 			return s, nil

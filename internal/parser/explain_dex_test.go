@@ -32,11 +32,11 @@ func buildMinimalDex(stringIds, typeIds, protoIds, fieldIds, methodIds, classDef
 	clsOff := mthOff + methodIdsSz
 	dataOff := clsOff + classDefsSz
 	mapOff := dataOff
-	
+
 	fileSize := dataOff + mapListSz + 16 // 16 bytes extra data padding
 
 	dex := make([]byte, fileSize)
-	
+
 	// magic + version
 	copy(dex[0:8], "dex\n035\x00")
 	// checksum @ 0x08 (4B)
@@ -86,9 +86,9 @@ func buildMinimalDex(stringIds, typeIds, protoIds, fieldIds, methodIds, classDef
 	binary.LittleEndian.PutUint32(dex[mapOff+8:], 1)      // size
 	binary.LittleEndian.PutUint32(dex[mapOff+12:], uint32(mapOff))
 	// item 2
-	binary.LittleEndian.PutUint16(dex[mapOff+16:], 0x0001) // TYPE_STRING_ID_ITEM
-	binary.LittleEndian.PutUint16(dex[mapOff+18:], 0)      // unused
-	binary.LittleEndian.PutUint32(dex[mapOff+20:], uint32(stringIds))      // size
+	binary.LittleEndian.PutUint16(dex[mapOff+16:], 0x0001)            // TYPE_STRING_ID_ITEM
+	binary.LittleEndian.PutUint16(dex[mapOff+18:], 0)                 // unused
+	binary.LittleEndian.PutUint32(dex[mapOff+20:], uint32(stringIds)) // size
 	binary.LittleEndian.PutUint32(dex[mapOff+24:], uint32(strOff))
 
 	return dex
@@ -97,11 +97,11 @@ func buildMinimalDex(stringIds, typeIds, protoIds, fieldIds, methodIds, classDef
 // wrapInVdex encapsulates one or more DEX files into a simple v027 VDEX.
 func wrapInVdex(dexes ...[]byte) []byte {
 	header := buildRawHeader("vdex", "027\x00", 4)
-	
+
 	checksumsSize := uint32(len(dexes) * 4)
 	checksumOff := uint32(12 + 48) // 60
 	dexOff := checksumOff + checksumsSize
-	
+
 	totalDexSize := uint32(0)
 	for _, d := range dexes {
 		// Align to 4 bytes if multiple dexes
@@ -116,7 +116,7 @@ func wrapInVdex(dexes ...[]byte) []byte {
 	sectionBuf = appendSectionHeader(sectionBuf, 3, dexOff+totalDexSize, 0) // typelookup
 
 	raw := append(header, sectionBuf...)
-	
+
 	// Checksums
 	for i := 0; i < len(dexes); i++ {
 		chk := make([]byte, 4)
@@ -135,7 +135,7 @@ func wrapInVdex(dexes ...[]byte) []byte {
 		raw = append(raw, d...)
 		currentSize += uint32(len(d))
 	}
-	
+
 	return raw
 }
 
@@ -146,7 +146,7 @@ func wrapInVdex(dexes ...[]byte) []byte {
 func TestExplainVdex_DexTable_AllTablesEmpty(t *testing.T) {
 	dex := buildMinimalDex(0, 0, 0, 0, 0, 0)
 	vdex := wrapInVdex(dex)
-	
+
 	tmpFile := filepath.Join(t.TempDir(), "empty_tables.vdex")
 	require.NoError(t, os.WriteFile(tmpFile, vdex, 0644))
 
@@ -168,7 +168,7 @@ func TestExplainVdex_DexTable_StringIdsOOB(t *testing.T) {
 	// Break string_ids_off
 	binary.LittleEndian.PutUint32(dex[0x3C:], 0xFFFFFF)
 	vdex := wrapInVdex(dex)
-	
+
 	tmpFile := filepath.Join(t.TempDir(), "string_ids_oob.vdex")
 	require.NoError(t, os.WriteFile(tmpFile, vdex, 0644))
 
@@ -178,12 +178,33 @@ func TestExplainVdex_DexTable_StringIdsOOB(t *testing.T) {
 	// Should not panic. Parsing might just gracefully truncate or skip.
 }
 
+func TestExplainVdex_StringDataUsesMUTF8ByteLength(t *testing.T) {
+	dex := buildMinimalDex(1, 0, 0, 0, 0, 0)
+	stringDataOff := len(dex) - 16
+	copy(dex[stringDataOff:], []byte{0x01, 0xc3, 0xa9, 0x00})
+
+	pm, err := ExplainVdexBytes(wrapInVdex(dex))
+	require.NoError(t, err)
+
+	var stringData *model.PrimitiveField
+	for _, field := range pm.Fields {
+		if field.LogicalPath == "vdex.dex[0].string_data[0]" {
+			stringData = field
+			break
+		}
+	}
+	require.NotNil(t, stringData)
+	assert.Equal(t, uint32(4), stringData.Size)
+	assert.Equal(t, model.ByteArray{0x01, 0xc3, 0xa9, 0x00}, stringData.RawBytes)
+	assert.Contains(t, stringData.Summary, "é")
+}
+
 func TestExplainVdex_DexTable_LargeStringIdsCount(t *testing.T) {
 	dex := buildMinimalDex(1, 0, 0, 0, 0, 0)
 	// Set huge string_ids_size
 	binary.LittleEndian.PutUint32(dex[0x38:], 1000)
 	vdex := wrapInVdex(dex)
-	
+
 	tmpFile := filepath.Join(t.TempDir(), "large_string_ids.vdex")
 	require.NoError(t, os.WriteFile(tmpFile, vdex, 0644))
 
@@ -196,7 +217,7 @@ func TestExplainVdex_DexTable_LargeStringIdsCount(t *testing.T) {
 func TestExplainVdex_DexTable_ProtoIdsAllFields(t *testing.T) {
 	dex := buildMinimalDex(0, 0, 3, 0, 0, 0)
 	vdex := wrapInVdex(dex)
-	
+
 	tmpFile := filepath.Join(t.TempDir(), "proto_ids_fields.vdex")
 	require.NoError(t, os.WriteFile(tmpFile, vdex, 0644))
 
@@ -206,12 +227,18 @@ func TestExplainVdex_DexTable_ProtoIdsAllFields(t *testing.T) {
 	shortyCount := 0
 	returnCount := 0
 	paramCount := 0
-	
+
 	for _, f := range pm.Fields {
 		if strings.Contains(f.LogicalPath, ".proto_ids[") {
-			if strings.HasSuffix(f.LogicalPath, ".shorty_idx") { shortyCount++ }
-			if strings.HasSuffix(f.LogicalPath, ".return_type_idx") { returnCount++ }
-			if strings.HasSuffix(f.LogicalPath, ".parameters_off") { paramCount++ }
+			if strings.HasSuffix(f.LogicalPath, ".shorty_idx") {
+				shortyCount++
+			}
+			if strings.HasSuffix(f.LogicalPath, ".return_type_idx") {
+				returnCount++
+			}
+			if strings.HasSuffix(f.LogicalPath, ".parameters_off") {
+				paramCount++
+			}
 		}
 	}
 	assert.Equal(t, 3, shortyCount)
@@ -222,7 +249,7 @@ func TestExplainVdex_DexTable_ProtoIdsAllFields(t *testing.T) {
 func TestExplainVdex_DexTable_FieldIdsAllFields(t *testing.T) {
 	dex := buildMinimalDex(0, 0, 0, 2, 0, 0)
 	vdex := wrapInVdex(dex)
-	
+
 	tmpFile := filepath.Join(t.TempDir(), "field_ids_fields.vdex")
 	require.NoError(t, os.WriteFile(tmpFile, vdex, 0644))
 
@@ -232,12 +259,18 @@ func TestExplainVdex_DexTable_FieldIdsAllFields(t *testing.T) {
 	classCount := 0
 	typeCount := 0
 	nameCount := 0
-	
+
 	for _, f := range pm.Fields {
 		if strings.Contains(f.LogicalPath, ".field_ids[") {
-			if strings.HasSuffix(f.LogicalPath, ".class_idx") { classCount++ }
-			if strings.HasSuffix(f.LogicalPath, ".type_idx") { typeCount++ }
-			if strings.HasSuffix(f.LogicalPath, ".name_idx") { nameCount++ }
+			if strings.HasSuffix(f.LogicalPath, ".class_idx") {
+				classCount++
+			}
+			if strings.HasSuffix(f.LogicalPath, ".type_idx") {
+				typeCount++
+			}
+			if strings.HasSuffix(f.LogicalPath, ".name_idx") {
+				nameCount++
+			}
 		}
 	}
 	assert.Equal(t, 2, classCount)
@@ -248,7 +281,7 @@ func TestExplainVdex_DexTable_FieldIdsAllFields(t *testing.T) {
 func TestExplainVdex_DexTable_MethodIdsAllFields(t *testing.T) {
 	dex := buildMinimalDex(0, 0, 0, 0, 2, 0)
 	vdex := wrapInVdex(dex)
-	
+
 	tmpFile := filepath.Join(t.TempDir(), "method_ids_fields.vdex")
 	require.NoError(t, os.WriteFile(tmpFile, vdex, 0644))
 
@@ -258,12 +291,18 @@ func TestExplainVdex_DexTable_MethodIdsAllFields(t *testing.T) {
 	classCount := 0
 	protoCount := 0
 	nameCount := 0
-	
+
 	for _, f := range pm.Fields {
 		if strings.Contains(f.LogicalPath, ".method_ids[") {
-			if strings.HasSuffix(f.LogicalPath, ".class_idx") { classCount++ }
-			if strings.HasSuffix(f.LogicalPath, ".proto_idx") { protoCount++ }
-			if strings.HasSuffix(f.LogicalPath, ".name_idx") { nameCount++ }
+			if strings.HasSuffix(f.LogicalPath, ".class_idx") {
+				classCount++
+			}
+			if strings.HasSuffix(f.LogicalPath, ".proto_idx") {
+				protoCount++
+			}
+			if strings.HasSuffix(f.LogicalPath, ".name_idx") {
+				nameCount++
+			}
 		}
 	}
 	assert.Equal(t, 2, classCount)
@@ -274,7 +313,7 @@ func TestExplainVdex_DexTable_MethodIdsAllFields(t *testing.T) {
 func TestExplainVdex_DexTable_ClassDefsAllFields(t *testing.T) {
 	dex := buildMinimalDex(0, 0, 0, 0, 0, 2)
 	vdex := wrapInVdex(dex)
-	
+
 	tmpFile := filepath.Join(t.TempDir(), "class_defs_fields.vdex")
 	require.NoError(t, os.WriteFile(tmpFile, vdex, 0644))
 
@@ -302,13 +341,13 @@ func TestExplainVdex_DexTable_ClassDefsAllFields(t *testing.T) {
 func TestExplainVdex_DexTable_MapListMultipleItems(t *testing.T) {
 	dex := buildMinimalDex(0, 0, 0, 0, 0, 0)
 	// buildMinimalDex creates 2 items in map_list. We will alter it to have 3 items.
-	
+
 	mapOff := binary.LittleEndian.Uint32(dex[0x34:])
-	
+
 	// Reallocate slightly larger array for 3 items
 	newDex := make([]byte, len(dex)+12)
 	copy(newDex, dex)
-	
+
 	binary.LittleEndian.PutUint32(newDex[mapOff:], 3) // count=3
 	// item 3
 	item3 := mapOff + 4 + 12*2
@@ -316,12 +355,12 @@ func TestExplainVdex_DexTable_MapListMultipleItems(t *testing.T) {
 	binary.LittleEndian.PutUint16(newDex[item3+2:], 0)
 	binary.LittleEndian.PutUint32(newDex[item3+4:], 5)
 	binary.LittleEndian.PutUint32(newDex[item3+8:], 120)
-	
+
 	// Update filesize
 	binary.LittleEndian.PutUint32(newDex[0x20:], uint32(len(newDex)))
-	
+
 	vdex := wrapInVdex(newDex)
-	
+
 	tmpFile := filepath.Join(t.TempDir(), "map_list_multi.vdex")
 	require.NoError(t, os.WriteFile(tmpFile, vdex, 0644))
 
@@ -335,9 +374,15 @@ func TestExplainVdex_DexTable_MapListMultipleItems(t *testing.T) {
 			hasSizeField = true
 		}
 		if strings.Contains(f.LogicalPath, ".map_list.item[") {
-			if strings.HasSuffix(f.LogicalPath, ".type") { typeCount++ }
-			if strings.HasSuffix(f.LogicalPath, ".count") { sizeCount++ }
-			if strings.HasSuffix(f.LogicalPath, ".offset") { offsetCount++ }
+			if strings.HasSuffix(f.LogicalPath, ".type") {
+				typeCount++
+			}
+			if strings.HasSuffix(f.LogicalPath, ".count") {
+				sizeCount++
+			}
+			if strings.HasSuffix(f.LogicalPath, ".offset") {
+				offsetCount++
+			}
 		}
 	}
 	assert.True(t, hasSizeField)
@@ -349,7 +394,7 @@ func TestExplainVdex_DexTable_MapListMultipleItems(t *testing.T) {
 func TestExplainVdex_DexTable_DataSectionAsBlob(t *testing.T) {
 	dex := buildMinimalDex(0, 0, 0, 0, 0, 0)
 	vdex := wrapInVdex(dex)
-	
+
 	tmpFile := filepath.Join(t.TempDir(), "data_blob.vdex")
 	require.NoError(t, os.WriteFile(tmpFile, vdex, 0644))
 
@@ -369,7 +414,7 @@ func TestExplainVdex_DexTable_DataSectionAsBlob(t *testing.T) {
 func TestExplainVdex_DexTable_HeaderFieldCount(t *testing.T) {
 	dex := buildMinimalDex(0, 0, 0, 0, 0, 0)
 	vdex := wrapInVdex(dex)
-	
+
 	tmpFile := filepath.Join(t.TempDir(), "header_fields.vdex")
 	require.NoError(t, os.WriteFile(tmpFile, vdex, 0644))
 
@@ -394,9 +439,9 @@ func TestExplainVdex_MultiDex_ThreeDexFiles(t *testing.T) {
 	d1 := buildMinimalDex(1, 0, 0, 0, 0, 0)
 	d2 := buildMinimalDex(0, 1, 0, 0, 0, 0)
 	d3 := buildMinimalDex(0, 0, 1, 0, 0, 0)
-	
+
 	vdex := wrapInVdex(d1, d2, d3)
-	
+
 	tmpFile := filepath.Join(t.TempDir(), "three_dex.vdex")
 	require.NoError(t, os.WriteFile(tmpFile, vdex, 0644))
 
@@ -405,9 +450,15 @@ func TestExplainVdex_MultiDex_ThreeDexFiles(t *testing.T) {
 
 	hasDex0, hasDex1, hasDex2 := false, false, false
 	for _, f := range pm.Fields {
-		if strings.Contains(f.LogicalPath, ".dex[0].header") { hasDex0 = true }
-		if strings.Contains(f.LogicalPath, ".dex[1].header") { hasDex1 = true }
-		if strings.Contains(f.LogicalPath, ".dex[2].header") { hasDex2 = true }
+		if strings.Contains(f.LogicalPath, ".dex[0].header") {
+			hasDex0 = true
+		}
+		if strings.Contains(f.LogicalPath, ".dex[1].header") {
+			hasDex1 = true
+		}
+		if strings.Contains(f.LogicalPath, ".dex[2].header") {
+			hasDex2 = true
+		}
 	}
 	assert.True(t, hasDex0)
 	assert.True(t, hasDex1)
@@ -417,9 +468,9 @@ func TestExplainVdex_MultiDex_ThreeDexFiles(t *testing.T) {
 func TestExplainVdex_MultiDex_DifferentSizes(t *testing.T) {
 	d1 := buildMinimalDex(0, 0, 0, 0, 0, 0)
 	d2 := buildMinimalDex(5, 5, 5, 5, 5, 5) // larger table means larger file
-	
+
 	vdex := wrapInVdex(d1, d2)
-	
+
 	tmpFile := filepath.Join(t.TempDir(), "diff_sizes.vdex")
 	require.NoError(t, os.WriteFile(tmpFile, vdex, 0644))
 
@@ -444,11 +495,11 @@ func TestExplainVdex_MultiDex_AlignmentBetween(t *testing.T) {
 	d1 = append(d1, 0x00, 0x00) // +2 bytes
 	// update file size in dex header
 	binary.LittleEndian.PutUint32(d1[0x20:], uint32(len(d1)))
-	
+
 	d2 := buildMinimalDex(0, 0, 0, 0, 0, 0)
-	
+
 	vdex := wrapInVdex(d1, d2)
-	
+
 	tmpFile := filepath.Join(t.TempDir(), "alignment.vdex")
 	require.NoError(t, os.WriteFile(tmpFile, vdex, 0644))
 
@@ -468,13 +519,13 @@ func TestExplainVdex_MultiDex_AlignmentBetween(t *testing.T) {
 func TestExplainVdex_MultiDex_SecondDexTruncated(t *testing.T) {
 	d1 := buildMinimalDex(0, 0, 0, 0, 0, 0)
 	d2 := buildMinimalDex(0, 0, 0, 0, 0, 0)
-	
+
 	vdex := wrapInVdex(d1, d2)
 	// Truncate halfway through d2
 	vdex = vdex[:len(vdex)-50]
 	// Fix section 1 size
 	binary.LittleEndian.PutUint32(vdex[32:], binary.LittleEndian.Uint32(vdex[32:])-50)
-	
+
 	tmpFile := filepath.Join(t.TempDir(), "truncated_d2.vdex")
 	require.NoError(t, os.WriteFile(tmpFile, vdex, 0644))
 
@@ -489,9 +540,9 @@ func TestExplainVdex_MultiDex_SecondDexTruncated(t *testing.T) {
 func TestExplainVdex_MultiDex_FieldPathIndexing(t *testing.T) {
 	d1 := buildMinimalDex(1, 1, 1, 1, 1, 1)
 	d2 := buildMinimalDex(1, 1, 1, 1, 1, 1)
-	
+
 	vdex := wrapInVdex(d1, d2)
-	
+
 	tmpFile := filepath.Join(t.TempDir(), "path_indexing.vdex")
 	require.NoError(t, os.WriteFile(tmpFile, vdex, 0644))
 
@@ -500,11 +551,14 @@ func TestExplainVdex_MultiDex_FieldPathIndexing(t *testing.T) {
 
 	hasDex0Fields, hasDex1Fields := false, false
 	for _, f := range pm.Fields {
-		if strings.HasPrefix(f.LogicalPath, "vdex.dex[0].class_defs") { hasDex0Fields = true }
-		if strings.HasPrefix(f.LogicalPath, "vdex.dex[1].class_defs") { hasDex1Fields = true }
+		if strings.HasPrefix(f.LogicalPath, "vdex.dex[0].class_defs") {
+			hasDex0Fields = true
+		}
+		if strings.HasPrefix(f.LogicalPath, "vdex.dex[1].class_defs") {
+			hasDex1Fields = true
+		}
 	}
-	
+
 	assert.True(t, hasDex0Fields)
 	assert.True(t, hasDex1Fields)
 }
-

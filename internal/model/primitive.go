@@ -1,5 +1,52 @@
 package model
 
+import (
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+)
+
+// ByteArray marshals as a JSON number array so browser consumers receive the
+// same byte-oriented representation exposed by the Go API. UnmarshalJSON also
+// accepts the legacy base64 string representation.
+type ByteArray []byte
+
+func (b ByteArray) MarshalJSON() ([]byte, error) {
+	values := make([]int, len(b))
+	for i, value := range b {
+		values[i] = int(value)
+	}
+	return json.Marshal(values)
+}
+
+func (b *ByteArray) UnmarshalJSON(data []byte) error {
+	if len(data) > 0 && data[0] == '"' {
+		var encoded string
+		if err := json.Unmarshal(data, &encoded); err != nil {
+			return err
+		}
+		decoded, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			return fmt.Errorf("decode legacy byte array: %w", err)
+		}
+		*b = decoded
+		return nil
+	}
+	var values []int
+	if err := json.Unmarshal(data, &values); err != nil {
+		return err
+	}
+	out := make([]byte, len(values))
+	for i, value := range values {
+		if value < 0 || value > 255 {
+			return fmt.Errorf("byte value at index %d is out of range: %d", i, value)
+		}
+		out[i] = byte(value)
+	}
+	*b = out
+	return nil
+}
+
 type PrimitiveType string
 
 const (
@@ -21,7 +68,7 @@ type PrimitiveField struct {
 	Offset      uint32        `json:"offset"`       // Start byte offset in the file
 	Size        uint32        `json:"size"`         // Physical size in bytes
 	Type        PrimitiveType `json:"type"`         // Primitive data type
-	RawBytes    []byte        `json:"raw_bytes"`    // Raw physical bytes (for hex dump)
+	RawBytes    ByteArray     `json:"raw_bytes"`    // Raw physical bytes (for hex dump)
 	ParsedValue interface{}   `json:"parsed_value"` // Parsed/converted actual Go value
 	LogicalPath string        `json:"logical_path"` // Logical structure path (e.g., "vdex.header.version")
 	Summary     string        `json:"summary"`      // Short summary description

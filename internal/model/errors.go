@@ -145,7 +145,7 @@ func DiagVersionMismatch(expected, got string) ParseDiagnostic {
 		fmt.Sprintf("vdexcli supports v%s (Android 12+); this file may parse partially or incorrectly", expected)}
 }
 
-func DiagSectionTableTruncated(need, have int) ParseDiagnostic {
+func DiagSectionTableTruncated(need uint64, have int) ParseDiagnostic {
 	return ParseDiagnostic{SeverityError, CatSection, ErrSectionTableTrunc,
 		fmt.Sprintf("file too small for section header table: need %d bytes, have %d", need, have),
 		"the file appears truncated; re-extract from the device or build output"}

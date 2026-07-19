@@ -70,9 +70,10 @@ type VerifierDexReport struct {
 }
 
 type VerifierReport struct {
-	Offset uint32              `json:"offset"`
-	Size   uint32              `json:"size"`
-	Dexes  []VerifierDexReport `json:"dexes"`
+	Offset      uint32              `json:"offset"`
+	Size        uint32              `json:"size"`
+	ContentHash string              `json:"content_hash"`
+	Dexes       []VerifierDexReport `json:"dexes"`
 }
 
 type TypeLookupSample struct {
@@ -98,9 +99,10 @@ type TypeLookupDexReport struct {
 }
 
 type TypeLookupReport struct {
-	Offset uint32                `json:"offset"`
-	Size   uint32                `json:"size"`
-	Dexes  []TypeLookupDexReport `json:"dexes"`
+	Offset      uint32                `json:"offset"`
+	Size        uint32                `json:"size"`
+	ContentHash string                `json:"content_hash"`
+	Dexes       []TypeLookupDexReport `json:"dexes"`
 }
 
 type ByteCoverageRange struct {
@@ -120,6 +122,7 @@ type ByteCoverageReport struct {
 
 type VdexReport struct {
 	SchemaVersion      string              `json:"schema_version"`
+	ContentHash        string              `json:"content_hash"`
 	Meanings           *ParserMeanings     `json:"meanings,omitempty"`
 	File               string              `json:"file"`
 	Size               int                 `json:"size"`

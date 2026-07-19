@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/0xc0de1ab/vdexcli/internal/model"
 )
@@ -17,10 +18,12 @@ func sampleReport(file string) *model.VdexReport {
 		Checksums: []uint32{0xCAFE},
 		Dexes:     []model.DexReport{{Index: 0, ChecksumId: 0xBEEF, ClassDefs: 3, Signature: "abc"}},
 		Verifier: &model.VerifierReport{Dexes: []model.VerifierDexReport{
-			{DexIndex: 0, VerifiedClasses: 2, UnverifiedClasses: 1, AssignabilityPairs: 5, ExtraStringCount: 1},
+			{DexIndex: 0, VerifiedClasses: 2, UnverifiedClasses: 1, AssignabilityPairs: 5, ExtraStringCount: 1,
+				FirstPairs: []model.VerifierPair{{ClassDefIndex: 0, DestID: 1, SrcID: 2}}},
 		}},
 		TypeLookup: &model.TypeLookupReport{Dexes: []model.TypeLookupDexReport{
-			{DexIndex: 0, BucketCount: 8, EntryCount: 6},
+			{DexIndex: 0, BucketCount: 8, EntryCount: 6,
+				Samples: []model.TypeLookupSample{{Bucket: 0, StringOffset: 1}}},
 		}},
 	}
 }
@@ -192,4 +195,78 @@ func TestDiff_HeaderMagicChanged(t *testing.T) {
 	assert.True(t, d.HeaderChanged)
 	assert.Equal(t, "vdex", d.HeaderDiff.MagicA)
 	assert.Equal(t, "oatx", d.HeaderDiff.MagicB)
+}
+
+func TestDiff_HeaderSectionCountChanged(t *testing.T) {
+	a := sampleReport("a.vdex")
+	b := sampleReport("b.vdex")
+	b.Header.NumSections = 5
+
+	d := Diff(a, b)
+
+	assert.True(t, d.HeaderChanged)
+	assert.False(t, d.Summary.Identical)
+	assert.Equal(t, uint32(4), d.HeaderDiff.NumSectionsA)
+	assert.Equal(t, uint32(5), d.HeaderDiff.NumSectionsB)
+}
+
+func TestDiff_VerifierPairContentChanged(t *testing.T) {
+	a := sampleReport("a.vdex")
+	b := sampleReport("b.vdex")
+	b.Verifier.Dexes[0].FirstPairs[0].SrcID = 99
+
+	d := Diff(a, b)
+
+	require.NotNil(t, d.VerifierDiff)
+	assert.False(t, d.Summary.Identical)
+	assert.Equal(t, 1, d.Summary.VerifierChanged)
+}
+
+func TestDiff_VerifierHashDetectsUnsampledContentChange(t *testing.T) {
+	a := sampleReport("a.vdex")
+	b := sampleReport("b.vdex")
+	a.Verifier.ContentHash = "old"
+	b.Verifier.ContentHash = "new"
+
+	d := Diff(a, b)
+
+	require.NotNil(t, d.VerifierDiff)
+	assert.True(t, d.VerifierDiff.ContentChanged)
+	assert.False(t, d.Summary.Identical)
+}
+
+func TestDiff_TypeLookupContentChangedWithoutCountDelta(t *testing.T) {
+	a := sampleReport("a.vdex")
+	b := sampleReport("b.vdex")
+	b.TypeLookup.Dexes[0].Samples[0].StringOffset = 99
+
+	d := Diff(a, b)
+
+	require.NotNil(t, d.TypeLookupDiff)
+	assert.Equal(t, 1, d.Summary.TypeLookupChanged)
+	assert.False(t, d.Summary.Identical)
+}
+
+func TestDiff_TypeLookupBucketChangeIsNotIdentical(t *testing.T) {
+	a := sampleReport("a.vdex")
+	b := sampleReport("b.vdex")
+	b.TypeLookup.Dexes[0].BucketCount++
+
+	d := Diff(a, b)
+
+	require.NotNil(t, d.TypeLookupDiff)
+	assert.Equal(t, 1, d.Summary.TypeLookupChanged)
+	assert.False(t, d.Summary.Identical)
+}
+
+func TestDiff_WholeFileHashDetectsUnparsedContentChange(t *testing.T) {
+	a := sampleReport("a.vdex")
+	b := sampleReport("b.vdex")
+	a.ContentHash = "old"
+	b.ContentHash = "new"
+
+	d := Diff(a, b)
+
+	assert.True(t, d.ContentChanged)
+	assert.False(t, d.Summary.Identical)
 }

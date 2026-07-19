@@ -236,3 +236,23 @@ func TestParseTypeLookupDex_CycleDetection(t *testing.T) {
 	}
 	assert.True(t, hasCycle, "should detect cycle in lookup chain")
 }
+
+func TestParseTypeLookupDex_DenseTableAllocationsStayLinear(t *testing.T) {
+	const buckets = 4096
+	entries := make([]byte, buckets*8)
+	for i := 0; i < buckets; i++ {
+		binary.LittleEndian.PutUint32(entries[i*8:], 1)
+	}
+	dex := &model.DexContext{
+		Rep:                model.DexReport{ClassDefs: 2},
+		StringOffsetToName: map[uint32]string{1: "Lx;"},
+	}
+
+	allocs := testing.AllocsPerRun(1, func() {
+		report := parseTypeLookupDex(entries, dex)
+		assert.Equal(t, buckets, report.EntryCount)
+		assert.Equal(t, 1, report.MaxChainLen)
+	})
+
+	assert.Less(t, allocs, float64(100), "chain analysis must not allocate once per bucket")
+}

@@ -6,6 +6,10 @@ on:
     paths:
       - 'web/**'
       - 'wasm/**'
+      - 'pkg/**'
+      - 'internal/**'
+      - 'go.mod'
+      - 'go.sum'
       - '.github/workflows/pages-deploy.yml'
   workflow_dispatch:
 
@@ -38,16 +42,16 @@ jobs:
         run: |
           mkdir -p web/public
           GOOS=js GOARCH=wasm go build -trimpath -ldflags="-s -w" -o web/public/vdex.wasm ./wasm/
-          cp "$(go env GOROOT)/misc/wasm/wasm_exec.js" web/public/
+          cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" web/public/
 
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
 
       - name: Install dependencies
         working-directory: ./web
-        run: npm ci || npm install
+        run: npm ci
 
       - name: Build Web App
         working-directory: ./web

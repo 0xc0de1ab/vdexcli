@@ -33,7 +33,7 @@ func main() {
 	js.Global().Set("vdex", js.ValueOf(map[string]any{
 		"explain": js.FuncOf(jsExplain),
 		"parse":   js.FuncOf(jsParse),
-		"version": js.ValueOf("v0.1.0"),
+		"version": js.ValueOf(vdex.Version()),
 	}))
 
 	// Block forever — the WASM module must remain alive for callbacks to work.

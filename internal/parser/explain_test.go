@@ -64,11 +64,11 @@ func TestExplainVdex_Comprehensive(t *testing.T) {
 	// We'll write a basic 112-byte DEX header.
 	dexHeader := make([]byte, 112)
 	copy(dexHeader[0:8], "dex\n035\x00")
-	binary.LittleEndian.PutUint32(dexHeader[8:12], 0x11223344) // checksum
-	binary.LittleEndian.PutUint32(dexHeader[0x20:0x24], 120)  // file_size = 120 bytes (header + 8 payload)
-	binary.LittleEndian.PutUint32(dexHeader[0x24:0x28], 112)  // header_size
+	binary.LittleEndian.PutUint32(dexHeader[8:12], 0x11223344)      // checksum
+	binary.LittleEndian.PutUint32(dexHeader[0x20:0x24], 120)        // file_size = 120 bytes (header + 8 payload)
+	binary.LittleEndian.PutUint32(dexHeader[0x24:0x28], 112)        // header_size
 	binary.LittleEndian.PutUint32(dexHeader[0x28:0x2c], 0x12345678) // endian_tag
-	binary.LittleEndian.PutUint32(dexHeader[0x60:0x64], 2)    // class_defs_size
+	binary.LittleEndian.PutUint32(dexHeader[0x60:0x64], 2)          // class_defs_size
 
 	dexPayload := []byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11}
 	dexFile := append(dexHeader, dexPayload...) // 120 bytes
@@ -127,15 +127,15 @@ func TestExplainVdex_Comprehensive(t *testing.T) {
 	// size = 8 bytes (1 entry)
 	// entry: string_offset=0x100, packed_data=0x02
 	typeLookupSection := make([]byte, 12)
-	binary.LittleEndian.PutUint32(typeLookupSection[0:4], 8) // size = 8
+	binary.LittleEndian.PutUint32(typeLookupSection[0:4], 8)     // size = 8
 	binary.LittleEndian.PutUint32(typeLookupSection[4:8], 0x100) // string_offset
 	binary.LittleEndian.PutUint32(typeLookupSection[8:12], 0x02) // packed_data
 
 	// Construct the VDEX file
 	// Let's lay them out with some gaps to test gap filling
-	checksumOff := uint32(12 + 48) // 60
-	dexOff := checksumOff + 4 // 64
-	verifierOff := dexOff + 120 + 4 // 188 (includes a 4-byte gap between DEX and Verifier)
+	checksumOff := uint32(12 + 48)                                      // 60
+	dexOff := checksumOff + 4                                           // 64
+	verifierOff := dexOff + 120 + 4                                     // 188 (includes a 4-byte gap between DEX and Verifier)
 	typeLookupOff := verifierOff + uint32(len(verifierDepsSection)) + 8 // (includes an 8-byte gap)
 
 	header := buildRawHeader("vdex", "027\x00", 4)
@@ -265,6 +265,30 @@ func TestExplainVdex_NumSectionsOverflow(t *testing.T) {
 
 	_, err := ExplainVdex(tmpFile)
 	require.Error(t, err, "expected error for overflowing numSections, got nil")
+}
+
+func TestExplainVdex_SectionRangeOverflow(t *testing.T) {
+	raw := buildRawHeader("vdex", "027\x00", 1)
+	raw = appendSectionHeader(raw, model.SectionChecksum, ^uint32(0), 1)
+
+	assert.NotPanics(t, func() {
+		pm, err := ExplainVdexBytes(raw)
+		require.NoError(t, err)
+		require.NotNil(t, pm)
+		assert.Equal(t, uint32(len(raw)), pm.TotalBytes)
+	})
+}
+
+func TestAnnotatedReader_OffsetOverflowDoesNotPanic(t *testing.T) {
+	r := NewAnnotatedReader([]byte{1, 2, 3, 4})
+	r.SetOffset(^uint32(0))
+
+	assert.NotPanics(t, func() {
+		assert.Equal(t, uint32(0), r.ReadUint32LE("test", "test", "test"))
+		assert.Nil(t, r.ReadBytes(4, "test", "test", "test"))
+		r.Align4("test")
+	})
+	assert.Empty(t, r.fields)
 }
 
 // TestExplainVdex_ReadCStringBounded_SectionBoundary verifies BUG-H2 fix:
@@ -432,33 +456,33 @@ func buildExplainVdexWithDex(t *testing.T) ([]byte, dexTableOffsets) {
 	binary.LittleEndian.PutUint32(dex[0x78:], 0) // type 0 → string 0
 	binary.LittleEndian.PutUint32(dex[0x7C:], 1) // type 1 → string 1
 	// proto_ids table @ 0x80 (shorty_idx, return_type_idx, parameters_off)
-	binary.LittleEndian.PutUint32(dex[0x80:], 0)    // shorty_idx
-	binary.LittleEndian.PutUint32(dex[0x84:], 0)    // return_type_idx
-	binary.LittleEndian.PutUint32(dex[0x88:], 0)    // parameters_off (none)
+	binary.LittleEndian.PutUint32(dex[0x80:], 0) // shorty_idx
+	binary.LittleEndian.PutUint32(dex[0x84:], 0) // return_type_idx
+	binary.LittleEndian.PutUint32(dex[0x88:], 0) // parameters_off (none)
 	// field_ids table @ 0x8C (class_idx u16, type_idx u16, name_idx u32)
-	binary.LittleEndian.PutUint16(dex[0x8C:], 0)    // class_idx
-	binary.LittleEndian.PutUint16(dex[0x8E:], 0)    // type_idx
-	binary.LittleEndian.PutUint32(dex[0x90:], 1)    // name_idx
+	binary.LittleEndian.PutUint16(dex[0x8C:], 0) // class_idx
+	binary.LittleEndian.PutUint16(dex[0x8E:], 0) // type_idx
+	binary.LittleEndian.PutUint32(dex[0x90:], 1) // name_idx
 	// method_ids table @ 0x94 (class_idx u16, proto_idx u16, name_idx u32)
-	binary.LittleEndian.PutUint16(dex[0x94:], 0)    // class_idx
-	binary.LittleEndian.PutUint16(dex[0x96:], 0)    // proto_idx
-	binary.LittleEndian.PutUint32(dex[0x98:], 1)    // name_idx
+	binary.LittleEndian.PutUint16(dex[0x94:], 0) // class_idx
+	binary.LittleEndian.PutUint16(dex[0x96:], 0) // proto_idx
+	binary.LittleEndian.PutUint32(dex[0x98:], 1) // name_idx
 	// class_defs table @ 0x9C (8 × uint32 = 32 bytes)
-	binary.LittleEndian.PutUint32(dex[0x9C:], 0)    // class_idx
-	binary.LittleEndian.PutUint32(dex[0xA0:], 0x01) // access_flags
+	binary.LittleEndian.PutUint32(dex[0x9C:], 0)          // class_idx
+	binary.LittleEndian.PutUint32(dex[0xA0:], 0x01)       // access_flags
 	binary.LittleEndian.PutUint32(dex[0xA4:], 0xFFFFFFFF) // superclass_idx (none)
-	binary.LittleEndian.PutUint32(dex[0xA8:], 0)    // interfaces_off
+	binary.LittleEndian.PutUint32(dex[0xA8:], 0)          // interfaces_off
 	binary.LittleEndian.PutUint32(dex[0xAC:], 0xFFFFFFFF) // source_file_idx
-	binary.LittleEndian.PutUint32(dex[0xB0:], 0)    // annotations_off
-	binary.LittleEndian.PutUint32(dex[0xB4:], 0)    // class_data_off
-	binary.LittleEndian.PutUint32(dex[0xB8:], 0)    // static_values_off
+	binary.LittleEndian.PutUint32(dex[0xB0:], 0)          // annotations_off
+	binary.LittleEndian.PutUint32(dex[0xB4:], 0)          // class_data_off
+	binary.LittleEndian.PutUint32(dex[0xB8:], 0)          // static_values_off
 
 	// map_list @ 0xBC: size=1 entries + 1 entry
 	binary.LittleEndian.PutUint32(dex[0xBC:], 1) // map_list size
 	// map_item: type=0x1000 (TYPE_MAP_LIST), unused=0, size=1, offset=0xBC
 	binary.LittleEndian.PutUint16(dex[0xC0:], 0x1000) // type
-	binary.LittleEndian.PutUint16(dex[0xC2:], 0)       // unused
-	binary.LittleEndian.PutUint32(dex[0xC4:], 1)       // size
+	binary.LittleEndian.PutUint16(dex[0xC2:], 0)      // unused
+	binary.LittleEndian.PutUint32(dex[0xC4:], 1)      // size
 	// Hmm, 0xC4 is also where string data starts - let's fix the map_list
 
 	// Correct layout: map_list needs 4 + 12*N bytes
@@ -481,15 +505,15 @@ func buildExplainVdexWithDex(t *testing.T) ([]byte, dexTableOffsets) {
 	newDex := make([]byte, newDexSize)
 	copy(newDex, dex[:minInt(len(dex), newDexSize)])
 	dex = newDex
-	binary.LittleEndian.PutUint32(dex[0x20:], uint32(newDexSize)) // update file_size
+	binary.LittleEndian.PutUint32(dex[0x20:], uint32(newDexSize))      // update file_size
 	binary.LittleEndian.PutUint32(dex[0x68:], uint32(newDexSize-0xCC)) // data_size
 
 	// map_list @ 0xBC: 4B count + 1×12B entry
-	binary.LittleEndian.PutUint32(dex[0xBC:], 1)         // count = 1 entry
-	binary.LittleEndian.PutUint16(dex[0xC0:], 0x1000)    // TYPE_MAP_LIST
-	binary.LittleEndian.PutUint16(dex[0xC2:], 0)         // padding
-	binary.LittleEndian.PutUint32(dex[0xC4:], 1)         // size = 1
-	binary.LittleEndian.PutUint32(dex[0xC8:], 0xBC)      // offset
+	binary.LittleEndian.PutUint32(dex[0xBC:], 1)      // count = 1 entry
+	binary.LittleEndian.PutUint16(dex[0xC0:], 0x1000) // TYPE_MAP_LIST
+	binary.LittleEndian.PutUint16(dex[0xC2:], 0)      // padding
+	binary.LittleEndian.PutUint32(dex[0xC4:], 1)      // size = 1
+	binary.LittleEndian.PutUint32(dex[0xC8:], 0xBC)   // offset
 
 	// string data @ 0xCC
 	// string 0: MUTF8 length=7, "LHello;", null
@@ -1172,7 +1196,7 @@ func TestExplainVdex_DEX_ZeroSizeIdTables(t *testing.T) {
 	// Minimal DEX: header only, no tables, no data
 	dex := make([]byte, 112)
 	copy(dex[0:8], "dex\n035\x00")
-	binary.LittleEndian.PutUint32(dex[0x20:], 112)   // file_size = header only
+	binary.LittleEndian.PutUint32(dex[0x20:], 112) // file_size = header only
 	binary.LittleEndian.PutUint32(dex[0x24:], 112)
 	binary.LittleEndian.PutUint32(dex[0x28:], 0x12345678)
 	// All table sizes = 0, all offsets = 0
@@ -1547,10 +1571,10 @@ func TestExplainVdex_AlignmentPadding_NotInUnmappedGaps(t *testing.T) {
 
 	// Section headers: checksum=4B, dex=empty, verDeps=empty(0x40,sz=0), typelookup(0x42,sz=4)
 	var sb []byte
-	sb = appendSectionHeader(sb, 0, uint32(hdr+secHdr), 4)       // checksum at 0x3c
-	sb = appendSectionHeader(sb, 1, 0, 0)                         // no DEX
-	sb = appendSectionHeader(sb, 2, verOff, 0)                    // verDeps empty
-	sb = appendSectionHeader(sb, 3, tlOff, tlSz)                  // typelookup at 0x42
+	sb = appendSectionHeader(sb, 0, uint32(hdr+secHdr), 4) // checksum at 0x3c
+	sb = appendSectionHeader(sb, 1, 0, 0)                  // no DEX
+	sb = appendSectionHeader(sb, 2, verOff, 0)             // verDeps empty
+	sb = appendSectionHeader(sb, 3, tlOff, tlSz)           // typelookup at 0x42
 
 	raw := buildRawHeader("vdex", "027\x00", 4)
 	raw = append(raw, sb...)
@@ -1648,9 +1672,9 @@ func TestExplainVdex_Gap_OneBytePadding(t *testing.T) {
 	sb = appendSectionHeader(sb, 3, 0x41, 4)
 	raw := append(header, sb...)
 	raw = append(raw, 0xCA, 0xFE, 0xBA, 0xBE) // checksum at 0x3c
-	raw = append(raw, 0x00) // 1 byte zero padding
+	raw = append(raw, 0x00)                   // 1 byte zero padding
 	raw = append(raw, 0x00, 0x00, 0x00, 0x00) // typelookup at 0x41
-	
+
 	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
 	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
 	pm, err := ExplainVdex(tmpFile)
@@ -1669,7 +1693,7 @@ func TestExplainVdex_Gap_TwoBytesPadding(t *testing.T) {
 	raw = append(raw, 0xCA, 0xFE, 0xBA, 0xBE)
 	raw = append(raw, 0x00, 0x00) // 2 bytes zero padding
 	raw = append(raw, 0x00, 0x00, 0x00, 0x00)
-	
+
 	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
 	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
 	pm, err := ExplainVdex(tmpFile)
@@ -1688,7 +1712,7 @@ func TestExplainVdex_Gap_ThreeBytesPadding(t *testing.T) {
 	raw = append(raw, 0xCA, 0xFE, 0xBA, 0xBE)
 	raw = append(raw, 0x00, 0x00, 0x00)
 	raw = append(raw, 0x00, 0x00, 0x00, 0x00)
-	
+
 	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
 	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
 	pm, err := ExplainVdex(tmpFile)
@@ -1707,7 +1731,7 @@ func TestExplainVdex_Gap_NonZeroPadding(t *testing.T) {
 	raw = append(raw, 0xCA, 0xFE, 0xBA, 0xBE)
 	raw = append(raw, 0xFF, 0xFF) // 2 bytes NON-ZERO padding
 	raw = append(raw, 0x00, 0x00, 0x00, 0x00)
-	
+
 	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
 	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
 	pm, err := ExplainVdex(tmpFile)
@@ -1728,7 +1752,7 @@ func TestExplainVdex_Gap_FourByteZeroPadding(t *testing.T) {
 	raw = append(raw, 0xCA, 0xFE, 0xBA, 0xBE)
 	raw = append(raw, 0x00, 0x00, 0x00, 0x00) // 4 bytes zero padding -> >3 threshold
 	raw = append(raw, 0x00, 0x00, 0x00, 0x00)
-	
+
 	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
 	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
 	pm, err := ExplainVdex(tmpFile)
@@ -1749,7 +1773,7 @@ func TestExplainVdex_Gap_TrailingOneByteZero(t *testing.T) {
 	raw = append(raw, 0xCA, 0xFE, 0xBA, 0xBE)
 	raw = append(raw, 0x00, 0x00, 0x00, 0x00)
 	raw = append(raw, 0x00) // 1 byte trailing padding
-	
+
 	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
 	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
 	pm, err := ExplainVdex(tmpFile)
@@ -1768,7 +1792,7 @@ func TestExplainVdex_Gap_TrailingFiveNonZero(t *testing.T) {
 	raw = append(raw, 0xCA, 0xFE, 0xBA, 0xBE)
 	raw = append(raw, 0x00, 0x00, 0x00, 0x00)
 	raw = append(raw, 0x1, 0x2, 0x3, 0x4, 0x5)
-	
+
 	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
 	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
 	pm, err := ExplainVdex(tmpFile)
@@ -1788,7 +1812,7 @@ func TestExplainVdex_Gap_SectionsTouching(t *testing.T) {
 	raw := append(header, sb...)
 	raw = append(raw, 0xCA, 0xFE, 0xBA, 0xBE)
 	raw = append(raw, 0x00, 0x00, 0x00, 0x00)
-	
+
 	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
 	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
 	pm, err := ExplainVdex(tmpFile)
@@ -1808,7 +1832,7 @@ func TestExplainVdex_Gap_OverlapSkipped(t *testing.T) {
 	sb = appendSectionHeader(sb, 3, 0, 0)
 	raw := append(header, sb...)
 	raw = append(raw, 0xCA, 0xFE, 0xBA, 0xBE, 0x0, 0x0, 0x0, 0x0)
-	
+
 	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
 	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
 	pm, err := ExplainVdex(tmpFile)
@@ -1827,7 +1851,7 @@ func TestExplainVdex_Gap_MixedZeroNonZero(t *testing.T) {
 	raw = append(raw, 0xCA, 0xFE, 0xBA, 0xBE)
 	raw = append(raw, 0x00, 0xFF, 0x00)
 	raw = append(raw, 0x00, 0x00, 0x00, 0x00)
-	
+
 	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
 	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
 	pm, err := ExplainVdex(tmpFile)
@@ -1848,7 +1872,7 @@ func TestExplainVdex_Boundary_SectionsOverlapCheckDex(t *testing.T) {
 	sb = appendSectionHeader(sb, 3, 0, 0)
 	raw := append(header, sb...)
 	raw = append(raw, 0xCA, 0xFE, 0xBA, 0xBE, 0x00, 0x00)
-	
+
 	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
 	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
 	pm, err := ExplainVdex(tmpFile)
@@ -1865,7 +1889,7 @@ func TestExplainVdex_Boundary_SectionPastEOF(t *testing.T) {
 	sb = appendSectionHeader(sb, 3, 0, 0)
 	raw := append(header, sb...)
 	raw = append(raw, 0xCA, 0xFE, 0xBA, 0xBE)
-	
+
 	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
 	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
 	pm, err := ExplainVdex(tmpFile)
@@ -1881,7 +1905,7 @@ func TestExplainVdex_Boundary_AllSectionsEmpty(t *testing.T) {
 	sb = appendSectionHeader(sb, 2, 0x3c, 0)
 	sb = appendSectionHeader(sb, 3, 0x3c, 0)
 	raw := append(header, sb...)
-	
+
 	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
 	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
 	pm, err := ExplainVdex(tmpFile)
@@ -1898,7 +1922,7 @@ func TestExplainVdex_Boundary_SameOffsetDifferentKinds(t *testing.T) {
 	sb = appendSectionHeader(sb, 3, 0, 0)
 	raw := append(header, sb...)
 	raw = append(raw, 0xCA, 0xFE, 0xBA, 0xBE)
-	
+
 	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
 	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
 	pm, err := ExplainVdex(tmpFile)
@@ -1943,7 +1967,7 @@ func TestExplainVdex_Malformed_InvalidDexMagic(t *testing.T) {
 	raw = append(raw, 0xCA, 0xFE, 0xBA, 0xBE)
 	raw = append(raw, []byte("xxx\n")...)
 	raw = append(raw, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0)
-	
+
 	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
 	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
 	pm, err := ExplainVdex(tmpFile)
@@ -1978,7 +2002,7 @@ func TestExplainVdex_Malformed_ChecksumSizeNotMul4(t *testing.T) {
 	sb = appendSectionHeader(sb, 3, 0, 0)
 	raw := append(header, sb...)
 	raw = append(raw, 0xCA, 0xFE, 0xBA, 0xBE, 0x00, 0x00)
-	
+
 	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
 	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
 	pm, err := ExplainVdex(tmpFile)

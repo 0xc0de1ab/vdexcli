@@ -243,6 +243,38 @@ func TestE2E_Modify_DryRun_JSON(t *testing.T) {
 	assert.Equal(t, true, data["dry_run"])
 }
 
+func TestE2E_Modify_ExpansionReportsOriginalDiff(t *testing.T) {
+	outPath := filepath.Join(t.TempDir(), "out.vdex")
+	patchPath := filepath.Join(t.TempDir(), "expand.json")
+	patch := map[string]any{
+		"mode": "replace",
+		"dexes": []any{map[string]any{
+			"dex_index":     0,
+			"extra_strings": []string{strings.Repeat("Lexpanded/VerifierDependency;", 32)},
+			"classes": []any{
+				map[string]any{"class_index": 0, "verified": false},
+				map[string]any{"class_index": 1, "verified": false},
+				map[string]any{"class_index": 2, "verified": false},
+			},
+		}},
+	}
+	patchJSON, err := json.Marshal(patch)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(patchPath, patchJSON, 0644))
+
+	out, stderr, code := runCLI(t, "modify", "--dry-run", "--format", "json", "--verifier-json", patchPath, testVdexPath, outPath)
+	require.Equal(t, 0, code, stderr)
+
+	var summary struct {
+		OldSize  int `json:"verifier_section_old_size"`
+		NewSize  int `json:"verifier_section_new_size"`
+		Modified int `json:"modified_classes"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &summary))
+	assert.Greater(t, summary.NewSize, summary.OldSize)
+	assert.Greater(t, summary.Modified, 0)
+}
+
 func TestE2E_Modify_DryRun_Summary(t *testing.T) {
 	outPath := filepath.Join(t.TempDir(), "out.vdex")
 	out, _, code := runCLI(t, "modify", "--dry-run", "--format", "summary", "--verifier-json", testPatchPath, testVdexPath, outPath)

@@ -15,24 +15,24 @@ import (
 // See https://source.android.com/docs/core/runtime/dex-format#access-flags
 func accessFlagsDescription(flags uint32) string {
 	const (
-		accPublic    = 0x0001
-		accPrivate   = 0x0002
-		accProtected = 0x0004
-		accStatic    = 0x0008
-		accFinal     = 0x0010
-		accSynchronized = 0x0020 // for methods
-		accVolatile  = 0x0040 // for fields
-		accBridge    = 0x0040 // for methods
-		accTransient = 0x0080 // for fields
-		accVarargs   = 0x0080 // for methods
-		accNative    = 0x0100
-		accInterface = 0x0200
-		accAbstract  = 0x0400
-		accStrict    = 0x0800
-		accSynthetic = 0x1000
-		accAnnotation = 0x2000
-		accEnum      = 0x4000
-		accConstructor = 0x10000
+		accPublic               = 0x0001
+		accPrivate              = 0x0002
+		accProtected            = 0x0004
+		accStatic               = 0x0008
+		accFinal                = 0x0010
+		accSynchronized         = 0x0020 // for methods
+		accVolatile             = 0x0040 // for fields
+		accBridge               = 0x0040 // for methods
+		accTransient            = 0x0080 // for fields
+		accVarargs              = 0x0080 // for methods
+		accNative               = 0x0100
+		accInterface            = 0x0200
+		accAbstract             = 0x0400
+		accStrict               = 0x0800
+		accSynthetic            = 0x1000
+		accAnnotation           = 0x2000
+		accEnum                 = 0x4000
+		accConstructor          = 0x10000
 		accDeclaredSynchronized = 0x20000
 	)
 	type flag struct {
@@ -74,6 +74,10 @@ type AnnotatedReader struct {
 	fields []*model.PrimitiveField
 }
 
+func (r *AnnotatedReader) canRead(size uint32) bool {
+	return uint64(r.offset)+uint64(size) <= uint64(len(r.data))
+}
+
 func NewAnnotatedReader(data []byte) *AnnotatedReader {
 	return &AnnotatedReader{data: data, offset: 0}
 }
@@ -91,15 +95,16 @@ func (r *AnnotatedReader) Len() uint32 {
 }
 
 func (r *AnnotatedReader) ReadMagic(size int, path string, summary string, desc string) string {
-	if r.offset+uint32(size) > uint32(len(r.data)) {
+	if size <= 0 || uint64(size) > uint64(^uint32(0)) || !r.canRead(uint32(size)) {
 		return ""
 	}
-	val := string(r.data[r.offset : r.offset+uint32(size)])
+	end := r.offset + uint32(size)
+	val := string(r.data[r.offset:end])
 	r.fields = append(r.fields, &model.PrimitiveField{
 		Offset:      r.offset,
 		Size:        uint32(size),
 		Type:        model.TypeMagic,
-		RawBytes:    r.data[r.offset : r.offset+uint32(size)],
+		RawBytes:    r.data[r.offset:end],
 		ParsedValue: val,
 		LogicalPath: path,
 		Summary:     summary,
@@ -110,7 +115,7 @@ func (r *AnnotatedReader) ReadMagic(size int, path string, summary string, desc 
 }
 
 func (r *AnnotatedReader) ReadUint8(path string, summary string, desc string) uint8 {
-	if r.offset+1 > uint32(len(r.data)) {
+	if !r.canRead(1) {
 		return 0
 	}
 	val := r.data[r.offset]
@@ -129,7 +134,7 @@ func (r *AnnotatedReader) ReadUint8(path string, summary string, desc string) ui
 }
 
 func (r *AnnotatedReader) ReadUint16LE(path string, summary string, desc string) uint16 {
-	if r.offset+2 > uint32(len(r.data)) {
+	if !r.canRead(2) {
 		return 0
 	}
 	val := binary.LittleEndian.Uint16(r.data[r.offset : r.offset+2])
@@ -148,7 +153,7 @@ func (r *AnnotatedReader) ReadUint16LE(path string, summary string, desc string)
 }
 
 func (r *AnnotatedReader) ReadUint32LE(path string, summary string, desc string) uint32 {
-	if r.offset+4 > uint32(len(r.data)) {
+	if !r.canRead(4) {
 		return 0
 	}
 	val := binary.LittleEndian.Uint32(r.data[r.offset : r.offset+4])
@@ -167,7 +172,7 @@ func (r *AnnotatedReader) ReadUint32LE(path string, summary string, desc string)
 }
 
 func (r *AnnotatedReader) ReadUint64LE(path string, summary string, desc string) uint64 {
-	if r.offset+8 > uint32(len(r.data)) {
+	if !r.canRead(8) {
 		return 0
 	}
 	val := binary.LittleEndian.Uint64(r.data[r.offset : r.offset+8])
@@ -186,6 +191,9 @@ func (r *AnnotatedReader) ReadUint64LE(path string, summary string, desc string)
 }
 
 func (r *AnnotatedReader) ReadUleb128(path string, summary string, desc string) (uint32, int) {
+	if !r.canRead(1) {
+		return 0, 0
+	}
 	val, bytesRead, err := binutil.ReadULEB128(r.data, int(r.offset))
 	if err != nil {
 		// Do NOT advance r.offset on error; caller must check bytesRead==0 and break.
@@ -247,10 +255,15 @@ func (r *AnnotatedReader) ReadBytes(size int, path string, summary string, desc 
 	if size <= 0 {
 		return nil
 	}
-	if r.offset+uint32(size) > uint32(len(r.data)) {
-		size = len(r.data) - int(r.offset)
+	if uint64(r.offset) >= uint64(len(r.data)) {
+		return nil
 	}
-	val := r.data[r.offset : r.offset+uint32(size)]
+	remaining := len(r.data) - int(r.offset)
+	if size > remaining {
+		size = remaining
+	}
+	end := r.offset + uint32(size)
+	val := r.data[r.offset:end]
 	r.fields = append(r.fields, &model.PrimitiveField{
 		Offset:      r.offset,
 		Size:        uint32(size),
@@ -266,7 +279,11 @@ func (r *AnnotatedReader) ReadBytes(size int, path string, summary string, desc 
 }
 
 func (r *AnnotatedReader) Align4(path string) {
-	newOffset := uint32(binutil.Align4(int(r.offset)))
+	aligned := (uint64(r.offset) + 3) &^ uint64(3)
+	if aligned > uint64(len(r.data)) || aligned > uint64(^uint32(0)) {
+		return
+	}
+	newOffset := uint32(aligned)
 	padSize := newOffset - r.offset
 	if padSize > 0 && newOffset <= uint32(len(r.data)) {
 		r.fields = append(r.fields, &model.PrimitiveField{
@@ -294,6 +311,9 @@ type sectionInfo struct {
 // This is the primary entry point and is compatible with all build targets including WASM.
 func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 	raw := data
+	if uint64(len(raw)) > uint64(^uint32(0)) {
+		return nil, fmt.Errorf("file exceeds the VDEX uint32 offset limit")
+	}
 
 	if len(raw) < 12 {
 		return nil, fmt.Errorf("file too small for VDEX header (%d bytes, need 12)", len(raw))
@@ -323,7 +343,6 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 
 	numSections := r.ReadUint32LE("vdex.header.sections", "Number of sections", "Total number of sections defined in the section table.")
 
-
 	// 2. Section Headers Table
 	// BUG-H3 fix: use uint64 arithmetic to prevent uint32 overflow when numSections is large.
 	headerEnd64 := uint64(12) + uint64(numSections)*12
@@ -342,10 +361,9 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 			sectionMap[kind] = sectionInfo{kind: kind, offset: offset, size: size}
 		}
 	}
-
 	// 3. Checksums Section (kind 0)
 	var checksumsCount int
-	if cs, ok := sectionMap[0]; ok && cs.size > 0 && cs.offset+cs.size <= uint32(len(raw)) {
+	if cs, ok := sectionMap[0]; ok && cs.size > 0 && validByteRange(len(raw), cs.offset, cs.size) {
 		r.SetOffset(cs.offset)
 		count := cs.size / 4
 		checksumsCount = int(count)
@@ -375,7 +393,7 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 
 	// 4. DEX Section (kind 1)
 	var dexDefs []uint32
-	if ds, ok := sectionMap[1]; ok && ds.size > 0 && ds.offset+ds.size <= uint32(len(raw)) {
+	if ds, ok := sectionMap[1]; ok && ds.size > 0 && validByteRange(len(raw), ds.offset, ds.size) {
 		cursor := ds.offset
 		dexIdx := 0
 		expectedDexCount := checksumsCount
@@ -425,7 +443,7 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 
 			effectiveSize := fileSize
 			if dexStart+effectiveSize > ds.offset+ds.size {
-				effectiveSize = ds.offset+ds.size - dexStart
+				effectiveSize = ds.offset + ds.size - dexStart
 			}
 
 			// Clamp header_size to header_size field value (usually 112)
@@ -469,7 +487,7 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 	}
 
 	// 5. VerifierDeps Section (kind 2)
-	if vs, ok := sectionMap[2]; ok && vs.size > 0 && vs.offset+vs.size <= uint32(len(raw)) {
+	if vs, ok := sectionMap[2]; ok && vs.size > 0 && validByteRange(len(raw), vs.offset, vs.size) {
 		sectionStart := int(vs.offset)
 		sectionEnd := sectionStart + int(vs.size)
 		r.SetOffset(vs.offset)
@@ -623,7 +641,7 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 	}
 
 	// 6. TypeLookupTable Section (kind 3)
-	if ts, ok := sectionMap[3]; ok && ts.size > 0 && ts.offset+ts.size <= uint32(len(raw)) {
+	if ts, ok := sectionMap[3]; ok && ts.size > 0 && validByteRange(len(raw), ts.offset, ts.size) {
 		sectionStart := int(ts.offset)
 		sectionEnd := sectionStart + int(ts.size)
 		r.SetOffset(ts.offset)
@@ -733,7 +751,7 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 			continue
 		}
 		if s.kind != 0 && s.kind != 1 && s.kind != 2 && s.kind != 3 {
-			if s.offset+s.size <= uint32(len(raw)) {
+			if validByteRange(len(raw), s.offset, s.size) {
 				r.SetOffset(s.offset)
 				r.ReadBytes(int(s.size), fmt.Sprintf("vdex.section_%d", s.kind), fmt.Sprintf("Section kind %d data", s.kind), "Raw unparsed section data.")
 			}

@@ -14,15 +14,18 @@ type VdexDiff struct {
 	DexDiffs       []DexFileDiff       `json:"dex_diffs,omitempty"`
 	VerifierDiff   *VerifierDiffInfo   `json:"verifier_diff,omitempty"`
 	TypeLookupDiff *TypeLookupDiffInfo `json:"type_lookup_diff,omitempty"`
+	ContentChanged bool                `json:"content_changed"`
 
 	Summary DiffSummary `json:"summary"`
 }
 
 type HeaderDiff struct {
-	MagicA   string `json:"magic_a,omitempty"`
-	MagicB   string `json:"magic_b,omitempty"`
-	VersionA string `json:"version_a,omitempty"`
-	VersionB string `json:"version_b,omitempty"`
+	MagicA       string `json:"magic_a,omitempty"`
+	MagicB       string `json:"magic_b,omitempty"`
+	VersionA     string `json:"version_a,omitempty"`
+	VersionB     string `json:"version_b,omitempty"`
+	NumSectionsA uint32 `json:"number_of_sections_a,omitempty"`
+	NumSectionsB uint32 `json:"number_of_sections_b,omitempty"`
 }
 
 type SectionDiff struct {
@@ -55,37 +58,41 @@ type DexFileDiff struct {
 }
 
 type VerifierDiffInfo struct {
-	DexCount     int               `json:"dex_count"`
-	DexDiffs     []VerifierDexDiff `json:"dex_diffs,omitempty"`
-	TotalChanged int               `json:"total_classes_changed"`
+	DexCount       int               `json:"dex_count"`
+	DexDiffs       []VerifierDexDiff `json:"dex_diffs,omitempty"`
+	TotalChanged   int               `json:"total_classes_changed"`
+	ContentChanged bool              `json:"content_changed"`
 }
 
 type VerifierDexDiff struct {
-	DexIndex      int `json:"dex_index"`
-	VerifiedA     int `json:"verified_a"`
-	VerifiedB     int `json:"verified_b"`
-	UnverifiedA   int `json:"unverified_a"`
-	UnverifiedB   int `json:"unverified_b"`
-	PairsA        int `json:"pairs_a"`
-	PairsB        int `json:"pairs_b"`
-	ExtraStringsA int `json:"extra_strings_a"`
-	ExtraStringsB int `json:"extra_strings_b"`
-	VerifiedDelta int `json:"verified_delta"`
-	PairsDelta    int `json:"pairs_delta"`
+	DexIndex       int  `json:"dex_index"`
+	VerifiedA      int  `json:"verified_a"`
+	VerifiedB      int  `json:"verified_b"`
+	UnverifiedA    int  `json:"unverified_a"`
+	UnverifiedB    int  `json:"unverified_b"`
+	PairsA         int  `json:"pairs_a"`
+	PairsB         int  `json:"pairs_b"`
+	ExtraStringsA  int  `json:"extra_strings_a"`
+	ExtraStringsB  int  `json:"extra_strings_b"`
+	VerifiedDelta  int  `json:"verified_delta"`
+	PairsDelta     int  `json:"pairs_delta"`
+	ContentChanged bool `json:"content_changed"`
 }
 
 type TypeLookupDiffInfo struct {
-	DexCount int                 `json:"dex_count"`
-	DexDiffs []TypeLookupDexDiff `json:"dex_diffs,omitempty"`
+	DexCount       int                 `json:"dex_count"`
+	DexDiffs       []TypeLookupDexDiff `json:"dex_diffs,omitempty"`
+	ContentChanged bool                `json:"content_changed"`
 }
 
 type TypeLookupDexDiff struct {
-	DexIndex     int `json:"dex_index"`
-	BucketsA     int `json:"buckets_a"`
-	BucketsB     int `json:"buckets_b"`
-	EntriesA     int `json:"entries_a"`
-	EntriesB     int `json:"entries_b"`
-	EntriesDelta int `json:"entries_delta"`
+	DexIndex       int  `json:"dex_index"`
+	BucketsA       int  `json:"buckets_a"`
+	BucketsB       int  `json:"buckets_b"`
+	EntriesA       int  `json:"entries_a"`
+	EntriesB       int  `json:"entries_b"`
+	EntriesDelta   int  `json:"entries_delta"`
+	ContentChanged bool `json:"content_changed"`
 }
 
 type DiffSummary struct {

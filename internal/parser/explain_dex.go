@@ -7,6 +7,7 @@ package parser
 // (section tables, data items, etc.).
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"sort"
@@ -27,27 +28,27 @@ type dexSectionInfo struct {
 // dexPayloadParams holds all parameters needed to annotate one DEX file's
 // internal payload sections.
 type dexPayloadParams struct {
-	raw            []byte
-	r              *AnnotatedReader
-	dexIdx         int
-	dexStart       uint32 // absolute file offset where this DEX begins
-	effectiveSize  uint32 // byte length of this DEX (may be < declared file_size if truncated)
-	headerSize     uint32 // from header_size field; usually 112
-	stringIdsOff   uint32
-	stringIdsSize  uint32
-	typeIdsOff     uint32
-	typeIdsSize    uint32
-	protoIdsOff    uint32
-	protoIdsSize   uint32
-	fieldIdsOff    uint32
-	fieldIdsSize   uint32
-	methodIdsOff   uint32
-	methodIdsSize  uint32
-	classDefsOff   uint32
-	classDefsSize  uint32
-	linkOff        uint32
-	linkSize       uint32
-	mapOff         uint32
+	raw           []byte
+	r             *AnnotatedReader
+	dexIdx        int
+	dexStart      uint32 // absolute file offset where this DEX begins
+	effectiveSize uint32 // byte length of this DEX (may be < declared file_size if truncated)
+	headerSize    uint32 // from header_size field; usually 112
+	stringIdsOff  uint32
+	stringIdsSize uint32
+	typeIdsOff    uint32
+	typeIdsSize   uint32
+	protoIdsOff   uint32
+	protoIdsSize  uint32
+	fieldIdsOff   uint32
+	fieldIdsSize  uint32
+	methodIdsOff  uint32
+	methodIdsSize uint32
+	classDefsOff  uint32
+	classDefsSize uint32
+	linkOff       uint32
+	linkSize      uint32
+	mapOff        uint32
 }
 
 // annotateMapList reads and decomposes a DEX map_list entry-by-entry into
@@ -103,7 +104,7 @@ func annotateMapList(r *AnnotatedReader, raw []byte, secName string, secOff, sec
 }
 
 // annotateStringIds reads string_ids table and resolves inline string values.
-func annotateStringIds(r *AnnotatedReader, raw []byte, secName string, secSize, dexStart, stringIdsSize uint32) {
+func annotateStringIds(r *AnnotatedReader, raw []byte, secName string, secSize, dexStart, dexEnd, stringIdsSize uint32) {
 	count := secSize / 4
 	for j := uint32(0); j < count; j++ {
 		strDataOff := r.ReadUint32LE(
@@ -114,10 +115,14 @@ func annotateStringIds(r *AnnotatedReader, raw []byte, secName string, secSize, 
 		// Resolve the string_data_item inline for display
 		var resolvedStr string
 		sdAbs := int(dexStart) + int(strDataOff)
-		if sdAbs >= 0 && sdAbs < len(raw) {
-			uleb, ulebLen, err := binutil.ReadULEB128(raw, sdAbs)
-			if err == nil && sdAbs+ulebLen+int(uleb) <= len(raw) {
-				resolvedStr = string(raw[sdAbs+ulebLen : sdAbs+ulebLen+int(uleb)])
+		if sdAbs >= 0 && sdAbs < len(raw) && sdAbs < int(dexEnd) {
+			_, ulebLen, err := binutil.ReadULEB128(raw, sdAbs)
+			strStart := sdAbs + ulebLen
+			limit := min(len(raw), int(dexEnd))
+			if err == nil && strStart < limit {
+				if n := bytes.IndexByte(raw[strStart:limit], 0); n >= 0 {
+					resolvedStr = string(raw[strStart : strStart+n])
+				}
 			}
 		}
 
@@ -236,19 +241,18 @@ func annotateStringDataItems(
 		if err != nil || sdAbs+ulebLen > len(raw) {
 			break
 		}
-		strLen := int(uleb)
-		itemSize := ulebLen + strLen + 1 // ULEB + chars + null terminator
-		if sdAbs+itemSize > int(dexEnd) || sdAbs+itemSize > len(raw) {
-			itemSize = int(dexEnd) - sdAbs
-			if itemSize <= 0 {
-				break
-			}
+		strStart := sdAbs + ulebLen
+		limit := min(len(raw), int(dexEnd))
+		if strStart >= limit {
+			break
 		}
-
-		var strVal string
-		if sdAbs+ulebLen+strLen <= len(raw) {
-			strVal = string(raw[sdAbs+ulebLen : sdAbs+ulebLen+strLen])
+		nullAt := bytes.IndexByte(raw[strStart:limit], 0)
+		if nullAt < 0 {
+			break
 		}
+		strLen := nullAt
+		itemSize := ulebLen + strLen + 1
+		strVal := string(raw[strStart : strStart+strLen])
 		r.SetOffset(uint32(sdAbs))
 		r.ReadBytes(itemSize,
 			fmt.Sprintf("vdex.dex[%d].string_data[%d]", dexIdx, si),
@@ -397,7 +401,7 @@ func annotateDexPayload(p dexPayloadParams) {
 
 		switch {
 		case strings.HasSuffix(sec.name, ".string_ids"):
-			annotateStringIds(r, raw, sec.name, sec.size, dexStart, p.stringIdsSize)
+			annotateStringIds(r, raw, sec.name, sec.size, dexStart, dexEnd, p.stringIdsSize)
 		case strings.HasSuffix(sec.name, ".type_ids"):
 			count := sec.size / 4
 			for j := uint32(0); j < count; j++ {

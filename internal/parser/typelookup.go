@@ -16,12 +16,12 @@ func ParseTypeLookupSection(raw []byte, s model.VdexSection, dexes []*model.DexC
 		Size:   s.Size,
 	}
 	var diags []model.ParseDiagnostic
-	start := int(s.Offset)
-	end := start + int(s.Size)
-	if start < 0 || end > len(raw) {
+	start, end, ok := sectionBounds(len(raw), s)
+	if !ok {
 		diags = append(diags, model.DiagTypeLookupSectionRange())
 		return out, diags
 	}
+	out.ContentHash = contentHash(raw[start:end])
 	if expected == 0 {
 		expected = len(dexes)
 	}
@@ -101,9 +101,8 @@ func parseTypeLookupDex(raw []byte, dex *model.DexContext) model.TypeLookupDexRe
 	}
 
 	samples := make([]model.TypeLookupSample, 0, binutil.MinInt(buckets, model.MaxTypeLookupSamples))
-	maxChain := 0
-	totalChain := 0
-	chainCount := 0
+	nextPositions := make([]int, buckets)
+	nonEmpty := make([]bool, buckets)
 	for i := 0; i < buckets; i++ {
 		base := i * 8
 		offset := binutil.ReadU32(raw, base)
@@ -112,6 +111,7 @@ func parseTypeLookupDex(raw []byte, dex *model.DexContext) model.TypeLookupDexRe
 		if offset == 0 {
 			continue
 		}
+		nonEmpty[i] = true
 		out.NonEmptyBuckets++
 		classIdx := uint32(0)
 		if maskBits > 0 {
@@ -136,36 +136,80 @@ func parseTypeLookupDex(raw []byte, dex *model.DexContext) model.TypeLookupDexRe
 				Descriptor:   desc,
 			})
 		}
+		if nextDelta != 0 {
+			nextPositions[i] = (i + int(nextDelta)) % buckets
+		} else {
+			nextPositions[i] = -1
+		}
+	}
 
-		// Chain stats
-		pos := i
-		chainLen := 0
-		visited := make([]bool, buckets)
-		for j := 0; j < buckets+1; j++ {
-			if visited[pos] {
-				out.Warnings = append(out.Warnings, "cycle detected in lookup chain")
-				break
-			}
-			visited[pos] = true
-			eOffset := binutil.ReadU32(raw, pos*8)
-			if eOffset == 0 {
-				break
-			}
-			ePacked := binutil.ReadU32(raw, pos*8+4)
-			next := uint32(0)
-			if maskBits != 0 {
-				next = ePacked & mask
-			}
-			chainLen++
-			if next == 0 {
-				break
-			}
-			pos = (pos + int(next)) % buckets
+	chainLengths := make([]int, buckets)
+	resolved := make([]bool, buckets)
+	visitID := make([]int, buckets)
+	visitStep := make([]int, buckets)
+	cycleDetected := false
+	path := make([]int, 0)
+	for root := 0; root < buckets; root++ {
+		if !nonEmpty[root] || resolved[root] {
+			continue
 		}
-		if chainLen > maxChain {
-			maxChain = chainLen
+		token := root + 1
+		path = path[:0]
+		pos := root
+		baseLen := 0
+		prefixEnd := 0
+		for {
+			if !nonEmpty[pos] {
+				prefixEnd = len(path)
+				break
+			}
+			if resolved[pos] {
+				baseLen = chainLengths[pos]
+				prefixEnd = len(path)
+				break
+			}
+			if visitID[pos] == token {
+				cycleStart := visitStep[pos]
+				cycleLen := len(path) - cycleStart
+				for _, node := range path[cycleStart:] {
+					chainLengths[node] = cycleLen
+					resolved[node] = true
+				}
+				baseLen = cycleLen
+				prefixEnd = cycleStart
+				cycleDetected = true
+				break
+			}
+			visitID[pos] = token
+			visitStep[pos] = len(path)
+			path = append(path, pos)
+			if nextPositions[pos] < 0 {
+				prefixEnd = len(path)
+				break
+			}
+			pos = nextPositions[pos]
 		}
-		totalChain += chainLen
+		for i := prefixEnd - 1; i >= 0; i-- {
+			baseLen++
+			chainLengths[path[i]] = baseLen
+			resolved[path[i]] = true
+		}
+	}
+	if cycleDetected {
+		out.Warnings = append(out.Warnings, "cycle detected in lookup chain")
+	}
+
+	maxChain := 0
+	totalChain := 0
+	chainCount := 0
+	for i, present := range nonEmpty {
+		if !present {
+			continue
+		}
+		if chainLengths[i] > maxChain {
+			maxChain = chainLengths[i]
+		}
+		totalChain += chainLengths[i]
 		chainCount++
 	}
 	out.Samples = samples
