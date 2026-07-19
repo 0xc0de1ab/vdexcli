@@ -204,8 +204,8 @@ jobs:
           path: vdex.wasm
           retention-days: 7
 
-  summary:
-    name: "summary"
+  required:
+    name: "[01] Required"
     if: always()
     needs: [fmt-check, vet, lint, vulncheck, test, build, build-wasm]
     runs-on: ubuntu-latest
@@ -217,6 +217,46 @@ jobs:
       TEST_RESULT: ${{ needs.test.result }}
       BUILD_RESULT: ${{ needs.build.result }}
       WASM_RESULT: ${{ needs['build-wasm'].result }}
+    steps:
+      - name: Verify required CI jobs
+        run: |
+          failed=()
+          while IFS='=' read -r check result; do
+            if [ "$result" != "success" ]; then
+              failed+=("$check=$result")
+            fi
+          done <<EOF
+          fmt=$FMT_RESULT
+          vet=$VET_RESULT
+          lint=$LINT_RESULT
+          vulncheck=$VULNCHECK_RESULT
+          test=$TEST_RESULT
+          build=$BUILD_RESULT
+          wasm=$WASM_RESULT
+          EOF
+
+          if [ "${#failed[@]}" -ne 0 ]; then
+            printf -v failures '%s, ' "${failed[@]}"
+            echo "::error::Required CI jobs did not succeed: ${failures%, }"
+            exit 1
+          fi
+
+          echo "All required CI jobs succeeded."
+
+  summary:
+    name: "summary"
+    if: always()
+    needs: [fmt-check, vet, lint, vulncheck, test, build, build-wasm, required]
+    runs-on: ubuntu-latest
+    env:
+      FMT_RESULT: ${{ needs['fmt-check'].result }}
+      VET_RESULT: ${{ needs.vet.result }}
+      LINT_RESULT: ${{ needs.lint.result }}
+      VULNCHECK_RESULT: ${{ needs.vulncheck.result }}
+      TEST_RESULT: ${{ needs.test.result }}
+      BUILD_RESULT: ${{ needs.build.result }}
+      WASM_RESULT: ${{ needs['build-wasm'].result }}
+      REQUIRED_RESULT: ${{ needs.required.result }}
       COVERAGE: ${{ needs.test.outputs.coverage }}
       WASM_SIZE: ${{ needs['build-wasm'].outputs.size }}
       WASM_SMOKE: ${{ needs['build-wasm'].outputs.smoke }}
@@ -239,6 +279,7 @@ jobs:
             printf '| Cross-platform builds | `%s` |\n' "$BUILD_RESULT"
             printf '| WASM build | `%s` |\n' "$WASM_RESULT"
             printf '| WASM bridge | `%s` |\n' "${WASM_SMOKE:-unavailable}"
+            printf '| Required gate | `%s` |\n' "$REQUIRED_RESULT"
             echo
             echo "### Outputs"
             printf -- '- Coverage: `%s`\n' "$coverage"
