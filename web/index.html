@@ -11,33 +11,6 @@
   </head>
   <body>
     <div id="root"></div>
-    <script vite-ignore src="%BASE_URL%wasm_exec.js"></script>
-    <script>
-      window.vdexReady = (async () => {
-        if (typeof Go === 'undefined') {
-          throw new Error('Go WASM runtime is unavailable');
-        }
-        const go = new Go();
-        const response = await fetch('%BASE_URL%vdex.wasm');
-        if (!response.ok) {
-          throw new Error(`WASM request failed: ${response.status} ${response.statusText}`);
-        }
-        let result;
-        try {
-          result = await WebAssembly.instantiateStreaming(response.clone(), go.importObject);
-        } catch {
-          result = await WebAssembly.instantiate(await response.arrayBuffer(), go.importObject);
-        }
-        void go.run(result.instance);
-        for (let attempt = 0; attempt < 100 && !window.vdex; attempt += 1) {
-          await new Promise(resolve => setTimeout(resolve, 10));
-        }
-        if (!window.vdex) {
-          throw new Error('VDEX WASM API was not registered');
-        }
-      })();
-      window.vdexReady.catch(err => console.error('Failed to load WASM module:', err));
-    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
