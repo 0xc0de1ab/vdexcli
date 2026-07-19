@@ -1,39 +1,23 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AlertCircle,
-  ChevronLeft,
-  ChevronRight,
-  ChevronsLeft,
-  ChevronsRight,
+  Binary,
   Clock3,
-  Database,
-  FileJson,
+  FileArchive,
   Loader2,
   RotateCcw,
   UploadCloud,
 } from 'lucide-react';
 
-import type { WorkerRequest, WorkerResponse } from './worker-protocol';
-
-interface Field {
-  offset: number;
-  size: number;
-  type: string;
-  parsed_value: unknown;
-  logical_path: string;
-  description: string;
-}
-
-interface Gap {
-  start: number;
-  end: number;
-}
-
-interface PrimitiveMap {
-  total_bytes: number;
-  fields: Field[];
-  unmapped_gaps: Gap[];
-}
+import VdexTreeGrid from './VdexTreeGrid';
+import heroImage from './assets/hero.png';
+import type {
+  StructureAnalysis,
+  StructureChildren,
+  StructureNode,
+  WorkerRequest,
+  WorkerResponse,
+} from './worker-protocol';
 
 interface VdexError {
   error: string;
@@ -46,8 +30,18 @@ interface ProgressState {
 }
 
 interface AnalysisResponse {
+  analysisId: number;
   result: unknown;
+  sourceBuffer: ArrayBuffer;
   analysisMs: number;
+  treeMs: number;
+}
+
+type TreeWorkerResponse = Extract<WorkerResponse, { type: 'children' | 'offset-path' }>;
+
+interface PendingTreeRequest {
+  resolve: (response: TreeWorkerResponse) => void;
+  reject: (reason: Error) => void;
 }
 
 interface PendingAnalysis {
@@ -56,58 +50,36 @@ interface PendingAnalysis {
   reject: (reason: Error) => void;
 }
 
-interface PaginationProps {
-  page: number;
-  pageCount: number;
-  rangeStart: number;
-  rangeEnd: number;
-  total: number;
-  onPageChange: (page: number) => void;
-}
-
-const FIELDS_PER_PAGE = 200;
-
 const isVdexError = (value: unknown): value is VdexError =>
   typeof value === 'object' && value !== null &&
   'error' in value && typeof (value as VdexError).error === 'string';
 
-const normalizePrimitiveMap = (value: unknown): PrimitiveMap | null => {
+const normalizeStructureAnalysis = (value: unknown): StructureAnalysis | null => {
   if (typeof value !== 'object' || value === null) return null;
-
-  const candidate = value as Record<string, unknown>;
-  if (typeof candidate.total_bytes !== 'number' || !Array.isArray(candidate.fields)) return null;
-  if (candidate.unmapped_gaps !== null && !Array.isArray(candidate.unmapped_gaps)) return null;
-
-  return {
-    ...candidate,
-    total_bytes: candidate.total_bytes,
-    fields: candidate.fields,
-    unmapped_gaps: candidate.unmapped_gaps ?? [],
-  } as PrimitiveMap;
+  const candidate = value as Partial<StructureAnalysis>;
+  if (
+    typeof candidate.total_bytes !== 'number' ||
+    typeof candidate.field_count !== 'number' ||
+    typeof candidate.root !== 'object' ||
+    candidate.root === null ||
+    !Array.isArray(candidate.initial_children) ||
+    !Array.isArray(candidate.unmapped_gaps)
+  ) return null;
+  return candidate as StructureAnalysis;
 };
 
 const formatBytes = (bytes: number): string => {
   if (bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const unitIndex = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const value = bytes / 1024 ** unitIndex;
+  return `${Number(value.toFixed(2)).toLocaleString()} ${units[unitIndex]}`;
 };
 
 const formatDuration = (milliseconds: number): string => {
   if (milliseconds < 1000) return `${Math.round(milliseconds)} ms`;
   return `${(milliseconds / 1000).toFixed(1)} s`;
 };
-
-const formatValue = (value: unknown): string => {
-  if (typeof value === 'string') return `"${value}"`;
-  if (value === null) return 'null';
-  if (typeof value === 'object') return JSON.stringify(value) ?? String(value);
-  return String(value);
-};
-
-const toHex = (num: number, padding = 2): string =>
-  num.toString(16).padStart(padding, '0').toUpperCase();
 
 const readFile = (file: File, onProgress: (loaded: number, total: number) => void) =>
   new Promise<ArrayBuffer>((resolve, reject) => {
@@ -122,72 +94,11 @@ const readFile = (file: File, onProgress: (loaded: number, total: number) => voi
     reader.readAsArrayBuffer(file);
   });
 
-function Pagination({
-  page,
-  pageCount,
-  rangeStart,
-  rangeEnd,
-  total,
-  onPageChange,
-}: PaginationProps) {
-  if (pageCount <= 1) return null;
-
-  return (
-    <nav className="pagination" aria-label="Field pages">
-      <span className="pagination-range">
-        {rangeStart.toLocaleString()}-{rangeEnd.toLocaleString()} of {total.toLocaleString()}
-      </span>
-      <div className="pagination-controls">
-        <button
-          type="button"
-          className="icon-button"
-          onClick={() => onPageChange(0)}
-          disabled={page === 0}
-          aria-label="First page"
-          title="First page"
-        >
-          <ChevronsLeft size={18} />
-        </button>
-        <button
-          type="button"
-          className="icon-button"
-          onClick={() => onPageChange(page - 1)}
-          disabled={page === 0}
-          aria-label="Previous page"
-          title="Previous page"
-        >
-          <ChevronLeft size={18} />
-        </button>
-        <span className="pagination-page">{page + 1} / {pageCount.toLocaleString()}</span>
-        <button
-          type="button"
-          className="icon-button"
-          onClick={() => onPageChange(page + 1)}
-          disabled={page >= pageCount - 1}
-          aria-label="Next page"
-          title="Next page"
-        >
-          <ChevronRight size={18} />
-        </button>
-        <button
-          type="button"
-          className="icon-button"
-          onClick={() => onPageChange(pageCount - 1)}
-          disabled={page >= pageCount - 1}
-          aria-label="Last page"
-          title="Last page"
-        >
-          <ChevronsRight size={18} />
-        </button>
-      </div>
-    </nav>
-  );
-}
-
 export default function App() {
   const [isDragging, setIsDragging] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [data, setData] = useState<PrimitiveMap | null>(null);
+  const [data, setData] = useState<StructureAnalysis | null>(null);
+  const [sourceBytes, setSourceBytes] = useState<Uint8Array | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [fileName, setFileName] = useState('');
   const [fileSize, setFileSize] = useState(0);
@@ -195,16 +106,18 @@ export default function App() {
   const [progress, setProgress] = useState<ProgressState | null>(null);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [analysisMs, setAnalysisMs] = useState<number | null>(null);
-  const [page, setPage] = useState(0);
+  const [treeMs, setTreeMs] = useState<number | null>(null);
 
   const workerRef = useRef<Worker | null>(null);
   const pendingRef = useRef<PendingAnalysis | null>(null);
+  const pendingTreeRef = useRef(new Map<number, PendingTreeRequest>());
+  const analysisIdRef = useRef<number | null>(null);
   const nextRequestId = useRef(1);
   const processingStartedAt = useRef<number | null>(null);
-  const detailPanelRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     const worker = new Worker(new URL('./vdex.worker.ts', import.meta.url), { type: 'classic' });
+    const pendingTreeRequests = pendingTreeRef.current;
     workerRef.current = worker;
 
     worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
@@ -223,7 +136,21 @@ export default function App() {
         if (pendingRef.current?.requestId === message.requestId) {
           const pending = pendingRef.current;
           pendingRef.current = null;
-          pending.resolve({ result: message.result, analysisMs: message.analysisMs });
+          pending.resolve({
+            analysisId: message.requestId,
+            result: message.result,
+            sourceBuffer: message.sourceBuffer,
+            analysisMs: message.analysisMs,
+            treeMs: message.treeMs,
+          });
+        }
+        return;
+      }
+      if (message.type === 'children' || message.type === 'offset-path') {
+        const pending = pendingTreeRequests.get(message.requestId);
+        if (pending) {
+          pendingTreeRequests.delete(message.requestId);
+          pending.resolve(message);
         }
         return;
       }
@@ -232,6 +159,10 @@ export default function App() {
       if (message.requestId !== undefined && pending?.requestId === message.requestId) {
         pendingRef.current = null;
         pending.reject(new Error(message.message));
+      } else if (message.requestId !== undefined && pendingTreeRequests.has(message.requestId)) {
+        const treePending = pendingTreeRequests.get(message.requestId);
+        pendingTreeRequests.delete(message.requestId);
+        treePending?.reject(new Error(message.message));
       } else {
         setEngineStatus('error');
         setError(message.message);
@@ -243,6 +174,8 @@ export default function App() {
       const pending = pendingRef.current;
       pendingRef.current = null;
       pending?.reject(workerError);
+      for (const treePending of pendingTreeRequests.values()) treePending.reject(workerError);
+      pendingTreeRequests.clear();
       setEngineStatus('error');
       setError(workerError.message);
     };
@@ -252,6 +185,10 @@ export default function App() {
 
     return () => {
       worker.terminate();
+      for (const pending of pendingTreeRequests.values()) {
+        pending.reject(new Error('VDEX analysis worker was closed'));
+      }
+      pendingTreeRequests.clear();
       if (workerRef.current === worker) workerRef.current = null;
     };
   }, []);
@@ -268,21 +205,6 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [isProcessing]);
 
-  const pageCount = data ? Math.max(1, Math.ceil(data.fields.length / FIELDS_PER_PAGE)) : 1;
-  const rangeStart = data && data.fields.length > 0 ? page * FIELDS_PER_PAGE + 1 : 0;
-  const rangeEnd = data ? Math.min((page + 1) * FIELDS_PER_PAGE, data.fields.length) : 0;
-  const visibleFields = useMemo(
-    () => data?.fields.slice(page * FIELDS_PER_PAGE, (page + 1) * FIELDS_PER_PAGE) ?? [],
-    [data, page],
-  );
-
-  const changePage = (nextPage: number) => {
-    setPage(nextPage);
-    window.requestAnimationFrame(() => {
-      detailPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
-  };
-
   const processFile = async (file: File) => {
     const worker = workerRef.current;
     if (!worker || engineStatus !== 'ready') {
@@ -295,8 +217,14 @@ export default function App() {
     setIsProcessing(true);
     setError(null);
     setData(null);
-    setPage(0);
+    setSourceBytes(null);
     setAnalysisMs(null);
+    setTreeMs(null);
+    analysisIdRef.current = null;
+    for (const pending of pendingTreeRef.current.values()) {
+      pending.reject(new Error('A new VDEX analysis was started'));
+    }
+    pendingTreeRef.current.clear();
     setElapsedMs(0);
     setProgress({ label: 'Reading file', detail: `0 B of ${formatBytes(file.size)}`, percent: 0 });
     processingStartedAt.current = performance.now();
@@ -311,8 +239,7 @@ export default function App() {
         });
       });
 
-      const requestId = nextRequestId.current;
-      nextRequestId.current += 1;
+      const requestId = nextRequestId.current++;
       const response = await new Promise<AnalysisResponse>((resolve, reject) => {
         pendingRef.current = { requestId, resolve, reject };
         const analyzeMessage: WorkerRequest = { type: 'analyze', requestId, buffer };
@@ -320,16 +247,22 @@ export default function App() {
       });
 
       if (isVdexError(response.result)) throw new Error(response.result.error);
-      const primitiveMap = normalizePrimitiveMap(response.result);
-      if (!primitiveMap) throw new Error('WASM returned an invalid analysis result');
+      const structure = normalizeStructureAnalysis(response.result);
+      if (!structure) throw new Error('WASM returned an invalid analysis result');
+      if (response.sourceBuffer.byteLength !== structure.total_bytes) {
+        throw new Error('WASM returned a mismatched source byte buffer');
+      }
 
       setProgress({
         label: 'Rendering analysis',
-        detail: `${primitiveMap.fields.length.toLocaleString()} fields ready`,
+        detail: `${structure.field_count.toLocaleString()} fields organized`,
         percent: 100,
       });
       setAnalysisMs(response.analysisMs);
-      setData(primitiveMap);
+      setTreeMs(response.treeMs);
+      analysisIdRef.current = response.analysisId;
+      setSourceBytes(new Uint8Array(response.sourceBuffer));
+      setData(structure);
     } catch (caught) {
       console.error(caught);
       setError(caught instanceof Error ? caught.message : 'Failed to process file');
@@ -356,168 +289,175 @@ export default function App() {
 
   const reset = () => {
     setData(null);
+    setSourceBytes(null);
     setError(null);
     setProgress(null);
     setFileName('');
     setFileSize(0);
-    setPage(0);
+    setAnalysisMs(null);
+    setTreeMs(null);
+    analysisIdRef.current = null;
+    for (const pending of pendingTreeRef.current.values()) {
+      pending.reject(new Error('The VDEX analysis was closed'));
+    }
+    pendingTreeRef.current.clear();
   };
 
+  const requestTreeData = useCallback((message: WorkerRequest): Promise<TreeWorkerResponse> => {
+    const worker = workerRef.current;
+    if (!worker) return Promise.reject(new Error('VDEX analysis worker is unavailable'));
+    if (message.type !== 'children' && message.type !== 'find-offset') {
+      return Promise.reject(new Error('Invalid tree request'));
+    }
+    return new Promise((resolve, reject) => {
+      pendingTreeRef.current.set(message.requestId, { resolve, reject });
+      try {
+        worker.postMessage(message);
+      } catch (caught) {
+        pendingTreeRef.current.delete(message.requestId);
+        reject(caught instanceof Error ? caught : new Error('Failed to request VDEX tree data'));
+      }
+    });
+  }, []);
+
+  const loadTreeChildren = useCallback(async (nodeId: number): Promise<StructureNode[]> => {
+    const analysisId = analysisIdRef.current;
+    if (analysisId === null) throw new Error('No active VDEX analysis');
+    const requestId = nextRequestId.current++;
+    const response = await requestTreeData({ type: 'children', requestId, analysisId, nodeId });
+    if (response.type !== 'children' || response.analysisId !== analysisId || response.nodeId !== nodeId) {
+      throw new Error('VDEX worker returned mismatched tree children');
+    }
+    return response.children;
+  }, [requestTreeData]);
+
+  const findTreeOffset = useCallback(async (
+    offset: number,
+  ): Promise<{ path: StructureNode[]; branches: StructureChildren[] }> => {
+    const analysisId = analysisIdRef.current;
+    if (analysisId === null) throw new Error('No active VDEX analysis');
+    const requestId = nextRequestId.current++;
+    const response = await requestTreeData({ type: 'find-offset', requestId, analysisId, offset });
+    if (response.type !== 'offset-path' || response.analysisId !== analysisId) {
+      throw new Error('VDEX worker returned a mismatched offset path');
+    }
+    return { path: response.path, branches: response.branches };
+  }, [requestTreeData]);
+
   return (
-    <div className="app-container">
-      <header className="header">
-        <h1>VDEX Web Analyzer</h1>
-        <p>Drop a compiled Android VDEX file to analyze its internal structure</p>
+    <div className={`app-shell${data ? ' has-analysis' : ''}`}>
+      <header className="app-header">
+        <div className="brand-lockup">
+          <span className="brand-mark"><Binary size={19} /></span>
+          <div>
+            <h1>VDEX Analyzer</h1>
+            <span>Physical byte structure explorer</span>
+          </div>
+        </div>
+        {data && (
+          <button type="button" className="secondary-button" onClick={reset}>
+            <RotateCcw size={16} /> New analysis
+          </button>
+        )}
       </header>
 
-      {engineStatus === 'loading' && !data && !isProcessing && (
-        <div className="glass-panel loading">
-          <Loader2 size={32} className="spinner" />
-          <p>Loading analysis engine...</p>
-        </div>
-      )}
+      <main>
+        {engineStatus === 'loading' && !data && !isProcessing && (
+          <div className="engine-loading" aria-live="polite">
+            <Loader2 size={24} className="spinner" />
+            <span>Loading analysis engine...</span>
+          </div>
+        )}
 
-      {engineStatus === 'ready' && !data && !isProcessing && (
-        <div className="glass-panel">
-          <label
-            className={`dropzone ${isDragging ? 'active' : ''}`}
-            onDragOver={(event) => { event.preventDefault(); setIsDragging(true); }}
-            onDragLeave={() => setIsDragging(false)}
-            onDrop={onDrop}
-          >
-            <input
-              type="file"
-              accept=".vdex,.dm,application/octet-stream"
-              hidden
-              onChange={onFileInput}
-            />
-            <UploadCloud size={48} color={isDragging ? '#3b82f6' : '#94a3b8'} />
-            <p>{isDragging ? 'Drop it here!' : 'Drag and drop a .vdex file, or click to select'}</p>
-          </label>
-        </div>
-      )}
+        {engineStatus === 'ready' && !data && !isProcessing && (
+          <section className="upload-view">
+            <img src={heroImage} alt="Layered binary file structure" />
+            <div className="upload-copy">
+              <span className="eyebrow">Local WASM analysis</span>
+              <h2>Open a VDEX file</h2>
+              <p>The file stays in this browser while its headers, arrays, and byte ranges are mapped.</p>
+            </div>
+            <label
+              className={`dropzone${isDragging ? ' active' : ''}`}
+              onDragOver={(event) => { event.preventDefault(); setIsDragging(true); }}
+              onDragLeave={() => setIsDragging(false)}
+              onDrop={onDrop}
+            >
+              <input
+                type="file"
+                className="visually-hidden"
+                accept=".vdex,.dm,application/octet-stream"
+                onChange={onFileInput}
+              />
+              <UploadCloud size={30} />
+              <span>{isDragging ? 'Drop the file here' : 'Drop a .vdex file or choose one'}</span>
+              <small>VDEX and DM binary files</small>
+            </label>
+          </section>
+        )}
 
-      {isProcessing && progress && (
-        <div className="glass-panel progress-panel" aria-live="polite">
-          <div className="progress-header">
-            <div className="progress-status">
-              <Loader2 size={30} className="spinner progress-spinner" />
-              <div className="progress-copy">
-                <strong>{progress.label}</strong>
-                <span>{fileName} · {progress.detail}</span>
+        {isProcessing && progress && (
+          <section className="progress-panel" aria-live="polite">
+            <div className="progress-header">
+              <div className="progress-status">
+                <Loader2 size={24} className="spinner" />
+                <div>
+                  <strong>{progress.label}</strong>
+                  <span>{fileName} · {progress.detail}</span>
+                </div>
               </div>
+              <span className="elapsed-time"><Clock3 size={16} /> {formatDuration(elapsedMs)}</span>
             </div>
-            <span className="elapsed-time"><Clock3 size={17} /> {formatDuration(elapsedMs)}</span>
-          </div>
-          <div
-            className="progress-track"
-            role="progressbar"
-            aria-label={progress.label}
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={progress.percent}
-          >
             <div
-              className={`progress-fill ${progress.percent === undefined ? 'indeterminate' : ''}`}
-              style={progress.percent === undefined ? undefined : { width: `${progress.percent}%` }}
-            />
-          </div>
-        </div>
-      )}
-
-      {error && (
-        <div className="glass-panel error-panel">
-          <AlertCircle size={24} />
-          <p>{error}</p>
-        </div>
-      )}
-
-      {data && !isProcessing && (
-        <div className="dashboard">
-          <aside className="summary-panel">
-            <div className="stat-card">
-              <h3>Total Size</h3>
-              <div className="value">{formatBytes(data.total_bytes)}</div>
-            </div>
-            <div className="stat-card">
-              <h3>Parsed Fields</h3>
-              <div className="value">{data.fields.length.toLocaleString()}</div>
-            </div>
-            <div className="stat-card">
-              <h3>Unmapped Gaps</h3>
-              <div className="value">{data.unmapped_gaps.length.toLocaleString()}</div>
-            </div>
-            <div className="stat-card">
-              <h3>WASM Time</h3>
-              <div className="value">{analysisMs === null ? '-' : formatDuration(analysisMs)}</div>
-            </div>
-            <div className="file-summary">
-              <span>{fileName}</span>
-              <small>{formatBytes(fileSize)} · total {formatDuration(elapsedMs)}</small>
-            </div>
-            <button type="button" className="reset-button" onClick={reset}>
-              <RotateCcw size={18} aria-hidden="true" /> Analyze Another File
-            </button>
-          </aside>
-
-          <section ref={detailPanelRef} className="detail-panel glass-panel">
-            <div className="detail-heading">
-              <h2><Database size={24} /> File Structure Breakdown</h2>
-              <Pagination
-                page={page}
-                pageCount={pageCount}
-                rangeStart={rangeStart}
-                rangeEnd={rangeEnd}
-                total={data.fields.length}
-                onPageChange={changePage}
+              className="progress-track"
+              role="progressbar"
+              aria-label={progress.label}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={progress.percent}
+            >
+              <div
+                className={`progress-fill${progress.percent === undefined ? ' indeterminate' : ''}`}
+                style={progress.percent === undefined ? undefined : { width: `${progress.percent}%` }}
               />
             </div>
-
-            <div className="field-list">
-              {visibleFields.map((field, index) => (
-                <div key={`${field.offset}-${field.logical_path}-${index}`} className="field-item">
-                  <div className="field-info">
-                    <span className="field-path">
-                      <FileJson size={14} aria-hidden="true" />
-                      {field.logical_path}
-                    </span>
-                    <span className="field-desc">{field.description}</span>
-                  </div>
-                  <div className="field-data">
-                    <span className="field-value">{formatValue(field.parsed_value)}</span>
-                    <span className="field-meta">
-                      0x{toHex(field.offset, 4)} ({field.size} bytes)
-                    </span>
-                  </div>
-                </div>
-              ))}
-
-              {data.unmapped_gaps.map((gap, index) => (
-                <div key={`gap-${index}`} className="field-item gap-item">
-                  <div className="field-info">
-                    <span className="field-path muted">[Unmapped Data]</span>
-                    <span className="field-desc">Unknown or unparsed raw bytes</span>
-                  </div>
-                  <div className="field-data">
-                    <span className="field-meta">
-                      0x{toHex(gap.start, 4)} ({gap.end - gap.start} bytes)
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <Pagination
-              page={page}
-              pageCount={pageCount}
-              rangeStart={rangeStart}
-              rangeEnd={rangeEnd}
-              total={data.fields.length}
-              onPageChange={changePage}
-            />
+            <p>Large files may spend most of their time decoding DEX and verifier arrays.</p>
           </section>
-        </div>
-      )}
+        )}
+
+        {error && (
+          <section className="error-panel" role="alert">
+            <AlertCircle size={21} />
+            <div><strong>Analysis failed</strong><p>{error}</p></div>
+          </section>
+        )}
+
+        {data && sourceBytes && !isProcessing && (
+          <div className="analysis-view">
+            <section className="analysis-summary" aria-label="Analysis summary">
+              <div className="file-identity">
+                <FileArchive size={18} />
+                <div><strong>{fileName}</strong><span>{formatBytes(fileSize)}</span></div>
+              </div>
+              <dl>
+                <div><dt>Total bytes</dt><dd>{data.total_bytes.toLocaleString()}</dd></div>
+                <div><dt>Parsed fields</dt><dd>{data.field_count.toLocaleString()}</dd></div>
+                <div><dt>Unmapped gaps</dt><dd>{data.unmapped_gaps.length.toLocaleString()}</dd></div>
+                <div><dt>WASM parse</dt><dd>{analysisMs === null ? '-' : formatDuration(analysisMs)}</dd></div>
+                <div><dt>Tree build</dt><dd>{treeMs === null ? '-' : formatDuration(treeMs)}</dd></div>
+                <div><dt>Total time</dt><dd>{formatDuration(elapsedMs)}</dd></div>
+              </dl>
+            </section>
+            <VdexTreeGrid
+              root={data.root}
+              initialChildren={data.initial_children}
+              sourceBytes={sourceBytes}
+              loadChildren={loadTreeChildren}
+              findOffset={findTreeOffset}
+            />
+          </div>
+        )}
+      </main>
     </div>
   );
 }
