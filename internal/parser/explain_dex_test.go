@@ -593,9 +593,10 @@ func TestBuildDexPreviewSamplesRepresentativePackages(t *testing.T) {
 	}
 	for index := 0; index < classDefsSize; index++ {
 		classIdx := uint32(0)
-		if index%5 == 3 {
+		switch index % 5 {
+		case 3:
 			classIdx = 1
-		} else if index%5 == 4 {
+		case 4:
 			classIdx = 2
 		}
 		binary.LittleEndian.PutUint32(raw[dexStart+classDefsOff+index*32:], classIdx)
