@@ -2,6 +2,29 @@ export type AnalysisStage = 'analyzing' | 'preparing';
 
 export type StructureNodeKind = 'root' | 'group' | 'array' | 'range' | 'item' | 'field' | 'gap';
 
+export interface DexPackagePreview {
+  name: string;
+  class_count: number;
+}
+
+export interface TypeLookupPreview {
+  table_bytes: number;
+  bucket_count: number;
+}
+
+export interface DexPreview {
+  index: number;
+  location_checksum?: number;
+  embedded: boolean;
+  class_count: number;
+  sampled_class_defs: number;
+  resolved_class_descriptors: number;
+  package_count: number;
+  top_packages?: DexPackagePreview[];
+  class_descriptors?: string[];
+  type_lookup?: TypeLookupPreview;
+}
+
 export interface StructureNode {
   id: number;
   key: string;
@@ -17,6 +40,7 @@ export interface StructureNode {
   type?: string;
   value?: unknown;
   description?: string;
+  dex_preview?: DexPreview;
   declared_offset?: number;
   declared_size?: number;
   preview_offset: number;

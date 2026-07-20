@@ -681,6 +681,20 @@ button {
   white-space: nowrap;
 }
 
+.key-cell.has-dex-preview .key-label {
+  flex: 0 0 auto;
+}
+
+.dex-semantic-label {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--value);
+  font-family: var(--mono);
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .node-kind {
   flex: 0 0 auto;
   color: var(--subtle);
@@ -757,6 +771,51 @@ button {
 
 .inspector-value {
   padding-top: 12px;
+}
+
+.dex-preview {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.dex-preview > p {
+  margin-top: 7px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.dex-preview-list {
+  margin-top: 7px;
+  list-style: none;
+}
+
+.dex-preview-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 10px;
+}
+
+.dex-preview-list code,
+.dex-class-preview code {
+  min-width: 0;
+  color: var(--value);
+  font-family: var(--mono);
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.dex-preview-list span,
+.dex-preview-evidence {
+  color: var(--muted);
+}
+
+.dex-class-preview {
+  display: grid;
+  gap: 4px;
+  margin-top: 10px;
 }
 
 .inspector-value code {

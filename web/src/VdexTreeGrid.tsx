@@ -8,7 +8,7 @@ import {
   Search,
 } from 'lucide-react';
 
-import type { StructureChildren, StructureNode } from './worker-protocol';
+import type { DexPreview, StructureChildren, StructureNode } from './worker-protocol';
 
 interface VdexTreeGridProps {
   root: StructureNode;
@@ -93,7 +93,53 @@ const getNodeLabel = (node: StructureNode, depth: number): string => {
   return node.key;
 };
 
+const formatChecksum = (checksum: number): string => `0x${toHex(checksum, 8)}`;
+
+const getDexPreviewLabel = (preview: DexPreview): string => {
+  const primaryPackage = preview.top_packages?.[0]?.name;
+  if (primaryPackage) return `sample: ${primaryPackage}.*`;
+  if (preview.location_checksum !== undefined) return `checksum ${formatChecksum(preview.location_checksum)}`;
+  return `DEX ${preview.index}`;
+};
+
+const getDexPreviewDisclosureLabel = (preview: DexPreview): string => {
+  const primaryPackage = preview.top_packages?.[0]?.name;
+  if (primaryPackage) return `DEX ${preview.index}, package sample ${primaryPackage}`;
+  if (preview.location_checksum !== undefined) {
+    return `DEX ${preview.index}, checksum ${formatChecksum(preview.location_checksum)}, package unavailable`;
+  }
+  return `DEX ${preview.index}, package unavailable`;
+};
+
+const getDexPreviewValue = (preview: DexPreview): string => {
+  const primaryPackage = preview.top_packages?.[0]?.name;
+  const lookup = preview.type_lookup
+    ? `${preview.type_lookup.bucket_count.toLocaleString()} buckets · ${formatBytes(preview.type_lookup.table_bytes)} table`
+    : '';
+  if (!preview.embedded) {
+    const checksum = preview.location_checksum === undefined
+      ? 'checksum unavailable'
+      : `checksum ${formatChecksum(preview.location_checksum)}`;
+    return [lookup, checksum, 'package unavailable', 'DEX not embedded'].filter(Boolean).join(' · ');
+  }
+  if (!primaryPackage) {
+    return [lookup, `${preview.class_count.toLocaleString()} classes`, 'package unavailable', 'embedded'].filter(Boolean).join(' · ');
+  }
+  return [
+    lookup,
+    `top sample ${primaryPackage}`,
+    `${preview.sampled_class_defs.toLocaleString()} sampled / ${preview.class_count.toLocaleString()} total classes`,
+    `${preview.package_count.toLocaleString()} packages in sample`,
+  ].filter(Boolean).join(' · ');
+};
+
+const formatClassDescriptor = (descriptor: string): string =>
+  descriptor.startsWith('L') && descriptor.endsWith(';')
+    ? descriptor.slice(1, -1).replaceAll('/', '.')
+    : descriptor;
+
 const getNodeValue = (node: StructureNode): string => {
+  if (node.dex_preview) return getDexPreviewValue(node.dex_preview);
   if (node.value !== undefined) return formatValue(node.value);
   if (node.kind === 'range') return `${node.item_count?.toLocaleString() ?? 0} array items`;
   if (node.kind === 'array') {
@@ -473,7 +519,7 @@ export default function VdexTreeGrid({
       {offsetError && <p id="offset-error" className="offset-error" role="alert">{offsetError}</p>}
       {treeError && <p className="tree-error" role="alert">{treeError}</p>}
       <p className="visually-hidden" aria-live="polite" aria-atomic="true">
-        Selected {selection.path}, offset 0x{toHex(selectedRange.offset)}, size {getNodeSize(node)}.
+        Selected {selection.path}{node.dex_preview ? `, ${getDexPreviewValue(node.dex_preview)}` : ''}, offset 0x{toHex(selectedRange.offset)}, size {getNodeSize(node)}.
       </p>
 
       <div className="structure-workspace">
@@ -541,7 +587,7 @@ export default function VdexTreeGrid({
                   >
                     {getNodeSize(row.node)}
                   </span>
-                  <span className="key-cell" role="gridcell" style={{ '--tree-depth': row.depth } as React.CSSProperties}>
+                  <span className={`key-cell${row.node.dex_preview ? ' has-dex-preview' : ''}`} role="gridcell" style={{ '--tree-depth': row.depth } as React.CSSProperties}>
                     {hasChildren ? (
                       <button
                         type="button"
@@ -549,14 +595,19 @@ export default function VdexTreeGrid({
                         tabIndex={-1}
                         onClick={(event) => { event.stopPropagation(); void toggleNode(row.node); }}
                         disabled={isLoading}
-                        aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${getNodeLabel(row.node, row.depth)}`}
-                        title={`${isExpanded ? 'Collapse' : 'Expand'} ${getNodeLabel(row.node, row.depth)}`}
+                        aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${row.node.dex_preview ? getDexPreviewDisclosureLabel(row.node.dex_preview) : getNodeLabel(row.node, row.depth)}`}
+                        title={`${isExpanded ? 'Collapse' : 'Expand'} ${row.node.dex_preview ? `DEX ${row.node.dex_preview.index}, ${getDexPreviewLabel(row.node.dex_preview)}` : getNodeLabel(row.node, row.depth)}`}
                       >
                         {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
                       </button>
                     ) : <span className="disclosure-spacer" />}
                     <span className="key-label">{getNodeLabel(row.node, row.depth)}</span>
-                    <span className="node-kind">{row.node.kind}</span>
+                    {row.node.dex_preview && (
+                      <span className="dex-semantic-label" title={getDexPreviewValue(row.node.dex_preview)}>
+                        {getDexPreviewLabel(row.node.dex_preview)}
+                      </span>
+                    )}
+                    <span className="node-kind">{row.node.dex_preview ? 'DEX' : row.node.kind}</span>
                   </span>
                   <span className="value-cell" role="gridcell" title={getNodeValue(row.node)}>
                     {getNodeValue(row.node)}
@@ -571,7 +622,7 @@ export default function VdexTreeGrid({
           <div className="inspector-heading">
             <div>
               <span className="eyebrow">Selected range</span>
-              <h3>{getNodeLabel(node, selection.path === 'vdex' ? 0 : 2)}</h3>
+              <h3>{node.dex_preview ? `DEX ${node.dex_preview.index}` : getNodeLabel(node, selection.path === 'vdex' ? 0 : 2)}</h3>
             </div>
             <span className={`range-state${node.declared_size === undefined && !node.contiguous ? ' fragmented' : ''}`}>
               {node.declared_size !== undefined ? 'declared block' : node.contiguous ? 'contiguous' : 'fragmented'}
@@ -583,10 +634,53 @@ export default function VdexTreeGrid({
             <div><dt>Offset</dt><dd>0x{toHex(selectedRange.offset)}</dd></div>
             <div><dt>Size</dt><dd>{getNodeSize(node)}</dd></div>
             <div><dt>Type</dt><dd>{node.type ?? node.kind}</dd></div>
+            {node.dex_preview?.location_checksum !== undefined && (
+              <div><dt>Location checksum</dt><dd>{formatChecksum(node.dex_preview.location_checksum)}</dd></div>
+            )}
+            {node.dex_preview && (
+              <div><dt>DEX payload</dt><dd>{node.dex_preview.embedded ? 'embedded' : 'not embedded'}</dd></div>
+            )}
+            {node.dex_preview?.type_lookup && (
+              <div>
+                <dt>Lookup table</dt>
+                <dd>{node.dex_preview.type_lookup.bucket_count.toLocaleString()} buckets / {formatBytes(node.dex_preview.type_lookup.table_bytes)}</dd>
+              </div>
+            )}
             {node.declared_size !== undefined && node.covered_bytes !== node.declared_size && (
               <div><dt>Mapped bytes</dt><dd>{node.covered_bytes.toLocaleString()} B</dd></div>
             )}
           </dl>
+
+          {node.dex_preview && (
+            <section className="dex-preview" aria-label={`DEX ${node.dex_preview.index} interpretation`}>
+              <span className="eyebrow">Package preview</span>
+              {node.dex_preview.top_packages?.length ? (
+                <ol className="dex-preview-list">
+                  {node.dex_preview.top_packages.map((pkg) => (
+                    <li key={pkg.name}>
+                      <code title={pkg.name}>{pkg.name}</code>
+                      <span>{pkg.class_count.toLocaleString()} sampled classes</span>
+                    </li>
+                  ))}
+                </ol>
+              ) : (
+                <p>Unavailable</p>
+              )}
+              {node.dex_preview.class_descriptors?.length ? (
+                <div className="dex-class-preview">
+                  <span className="eyebrow">Class examples</span>
+                  {node.dex_preview.class_descriptors.map((descriptor, index) => (
+                    <code key={`${descriptor}-${index}`} title={formatClassDescriptor(descriptor)}>{formatClassDescriptor(descriptor)}</code>
+                  ))}
+                </div>
+              ) : null}
+              <p className="dex-preview-evidence">
+                {node.dex_preview.embedded
+                  ? `${node.dex_preview.resolved_class_descriptors.toLocaleString()} resolved / ${node.dex_preview.sampled_class_defs.toLocaleString()} sampled / ${node.dex_preview.class_count.toLocaleString()} total classes`
+                  : 'A companion DEX is required to resolve package names.'}
+              </p>
+            </section>
+          )}
 
           <div className="inspector-value">
             <span className="eyebrow">Value</span>

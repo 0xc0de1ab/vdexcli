@@ -423,7 +423,7 @@ go.run(result.instance);
 // Analyze a VDEX file (FileReader → Uint8Array → WASM)
 const bytes = new Uint8Array(await file.arrayBuffer());
 
-// Byte-level field map → { fields: [...], total_bytes: N, unmapped_gaps: [...] }
+// Byte-level field map → { fields: [...], dex_previews: [...], total_bytes: N, unmapped_gaps: [...] }
 const fieldMap = window.vdex.explain(bytes);
 
 // High-level structural report → { header: {...}, dex_files: [...], ... }
@@ -437,7 +437,7 @@ console.log(window.vdex.version);  // "v0.1.0"
 
 | Function | Input | Output |
 |----------|-------|--------|
-| `window.vdex.explain(Uint8Array)` | Raw VDEX bytes | `{ fields, total_bytes, unmapped_gaps }` or `{ error }` |
+| `window.vdex.explain(Uint8Array)` | Raw VDEX bytes | `{ fields, dex_previews, total_bytes, unmapped_gaps }` or `{ error }` |
 | `window.vdex.parse(Uint8Array)` | Raw VDEX bytes | `VdexReport` object or `{ error }` |
 | `window.vdex.version` | — | Version string |
 
