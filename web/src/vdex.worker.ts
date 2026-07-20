@@ -7,6 +7,29 @@ type WorkerRequest =
 
 type StructureNodeKind = 'root' | 'group' | 'array' | 'range' | 'item' | 'field' | 'gap';
 
+interface DexPackagePreview {
+  name: string;
+  class_count: number;
+}
+
+interface TypeLookupPreview {
+  table_bytes: number;
+  bucket_count: number;
+}
+
+interface DexPreview {
+  index: number;
+  location_checksum?: number;
+  embedded: boolean;
+  class_count: number;
+  sampled_class_defs: number;
+  resolved_class_descriptors: number;
+  package_count: number;
+  top_packages?: DexPackagePreview[];
+  class_descriptors?: string[];
+  type_lookup?: TypeLookupPreview;
+}
+
 interface StructureNode {
   id: number;
   key: string;
@@ -22,6 +45,7 @@ interface StructureNode {
   type?: string;
   value?: unknown;
   description?: string;
+  dex_preview?: DexPreview;
   declared_offset?: number;
   declared_size?: number;
   preview_offset: number;
@@ -117,6 +141,7 @@ interface BuildNode {
   type?: string;
   value?: unknown;
   description?: string;
+  dex_preview?: DexPreview;
   declared_offset?: number;
   declared_size?: number;
   preview_offset?: number;
@@ -278,6 +303,90 @@ const sectionItemValue = (children: BuildNode[]): string | undefined => {
     3: 'Type lookup section header',
   };
   return sectionNames[kindNode.value] ?? `Unknown section ${kindNode.value} header`;
+};
+
+const readDexPreviews = (value: unknown): DexPreview[] => {
+  if (!Array.isArray(value)) return [];
+  const previews: DexPreview[] = [];
+  for (const candidate of value) {
+    if (typeof candidate !== 'object' || candidate === null) continue;
+    const item = candidate as Record<string, unknown>;
+    if (
+      !Number.isInteger(item.index) ||
+      typeof item.embedded !== 'boolean' ||
+      !Number.isInteger(item.class_count) ||
+      !Number.isInteger(item.sampled_class_defs) ||
+      !Number.isInteger(item.resolved_class_descriptors) ||
+      !Number.isInteger(item.package_count)
+    ) continue;
+    const topPackages = Array.isArray(item.top_packages)
+      ? item.top_packages.flatMap((entry): DexPackagePreview[] => {
+          if (typeof entry !== 'object' || entry === null) return [];
+          const pkg = entry as Record<string, unknown>;
+          return typeof pkg.name === 'string' && Number.isInteger(pkg.class_count)
+            ? [{ name: pkg.name, class_count: pkg.class_count as number }]
+            : [];
+        })
+      : undefined;
+    const classDescriptors = Array.isArray(item.class_descriptors)
+      ? item.class_descriptors.filter((descriptor): descriptor is string => typeof descriptor === 'string')
+      : undefined;
+    previews.push({
+      index: item.index as number,
+      ...(Number.isInteger(item.location_checksum)
+        ? { location_checksum: item.location_checksum as number }
+        : {}),
+      embedded: item.embedded,
+      class_count: item.class_count as number,
+      sampled_class_defs: item.sampled_class_defs as number,
+      resolved_class_descriptors: item.resolved_class_descriptors as number,
+      package_count: item.package_count as number,
+      ...(topPackages === undefined ? {} : { top_packages: topPackages }),
+      ...(classDescriptors === undefined ? {} : { class_descriptors: classDescriptors }),
+    });
+  }
+  return previews;
+};
+
+const dexPreviewDescription = (preview: DexPreview): string => {
+  if (!preview.embedded) {
+    return 'Package preview unavailable because this VDEX does not embed the source DEX. The location checksum identifies the input position, not a file name.';
+  }
+  if (preview.resolved_class_descriptors === 0) {
+    return 'Embedded DEX found, but its class descriptors could not be resolved safely.';
+  }
+  return `Representative packages inferred from ${preview.resolved_class_descriptors.toLocaleString()} of ${preview.sampled_class_defs.toLocaleString()} sampled class definitions.`;
+};
+
+const typeLookupPreviewFrom = (node: BuildNode): TypeLookupPreview | undefined => {
+  const size = node.children.find((child) => child.key === 'size')?.value;
+  if (typeof size !== 'number' || !Number.isInteger(size) || size < 0) return undefined;
+  return { table_bytes: size, bucket_count: Math.floor(size / 8) };
+};
+
+const attachDexPreviews = (root: BuildNode, previews: DexPreview[]) => {
+  const byIndex = new Map(previews.map((preview) => [preview.index, preview]));
+  const visit = (node: BuildNode, parent?: BuildNode, dexSectionKey?: string) => {
+    if (dexSectionKey !== undefined && node.index !== undefined) {
+      const preview = byIndex.get(node.index);
+      if (preview) {
+        const typeLookup = dexSectionKey === 'typelookup' ? typeLookupPreviewFrom(node) : undefined;
+        node.dex_preview = typeLookup === undefined ? preview : { ...preview, type_lookup: typeLookup };
+        node.description = dexPreviewDescription(preview);
+      }
+      for (const child of node.children) visit(child, node);
+      return;
+    }
+    if (node.key === 'dex') {
+      for (const child of node.children) visit(child, node, parent?.key);
+      return;
+    }
+    const nestedDexSection = dexSectionKey !== undefined && node.kind === 'range'
+      ? dexSectionKey
+      : undefined;
+    for (const child of node.children) visit(child, node, nestedDexSection);
+  };
+  visit(root);
 };
 
 const aggregateNode = (
@@ -462,6 +571,7 @@ const serializeNode = (node: BuildNode): StructureNode => ({
   ...(node.type === undefined ? {} : { type: node.type }),
   ...(node.value === undefined ? {} : { value: node.value }),
   ...(node.description === undefined ? {} : { description: node.description }),
+  ...(node.dex_preview === undefined ? {} : { dex_preview: node.dex_preview }),
   ...(node.declared_offset === undefined ? {} : { declared_offset: node.declared_offset }),
   ...(node.declared_size === undefined ? {} : { declared_size: node.declared_size }),
   preview_offset: node.preview_offset ?? node.offset ?? 0,
@@ -482,6 +592,7 @@ const buildStructureAnalysis = (parsedResult: Record<string, unknown>, fields: R
   ensureSectionNodes(mutableRoot, declarations);
   const nodes = new Map<number, BuildNode>();
   const root = finishNode(mutableRoot, nodes, true);
+  attachDexPreviews(root, readDexPreviews(parsedResult.dex_previews));
   const totalBytes = typeof parsedResult.total_bytes === 'number' ? parsedResult.total_bytes : 0;
   root.offset = 0;
   root.span = totalBytes;

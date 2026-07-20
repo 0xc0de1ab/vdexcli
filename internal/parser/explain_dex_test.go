@@ -2,10 +2,12 @@ package parser
 
 import (
 	"encoding/binary"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -561,4 +563,132 @@ func TestExplainVdex_MultiDex_FieldPathIndexing(t *testing.T) {
 
 	assert.True(t, hasDex0Fields)
 	assert.True(t, hasDex1Fields)
+}
+
+func TestBuildDexPreviewSamplesRepresentativePackages(t *testing.T) {
+	const (
+		dexStart      = 16
+		stringIDsOff  = 0x20
+		typeIDsOff    = 0x30
+		classDefsOff  = 0x40
+		classDefsSize = 600
+	)
+
+	descriptors := []string{
+		"Lcom/example/Alpha;",
+		"Lcom/example/sub/Beta;",
+		"Lorg/other/Gamma;",
+	}
+	stringDataOff := classDefsOff + classDefsSize*32
+	effectiveSize := stringDataOff + 128
+	raw := make([]byte, dexStart+effectiveSize)
+
+	cursor := stringDataOff
+	for index, descriptor := range descriptors {
+		binary.LittleEndian.PutUint32(raw[dexStart+stringIDsOff+index*4:], uint32(cursor))
+		raw[dexStart+cursor] = byte(len(descriptor))
+		copy(raw[dexStart+cursor+1:], descriptor)
+		cursor += len(descriptor) + 2
+		binary.LittleEndian.PutUint32(raw[dexStart+typeIDsOff+index*4:], uint32(index))
+	}
+	for index := 0; index < classDefsSize; index++ {
+		classIdx := uint32(0)
+		if index%5 == 3 {
+			classIdx = 1
+		} else if index%5 == 4 {
+			classIdx = 2
+		}
+		binary.LittleEndian.PutUint32(raw[dexStart+classDefsOff+index*32:], classIdx)
+	}
+
+	preview := buildDexPreview(dexPayloadParams{
+		raw: raw, dexIdx: 2, dexStart: dexStart, effectiveSize: uint32(effectiveSize),
+		stringIdsOff: stringIDsOff, stringIdsSize: uint32(len(descriptors)),
+		typeIdsOff: typeIDsOff, typeIdsSize: uint32(len(descriptors)),
+		classDefsOff: classDefsOff, classDefsSize: classDefsSize,
+	})
+
+	assert.Equal(t, 2, preview.Index)
+	assert.True(t, preview.Embedded)
+	assert.Equal(t, uint32(classDefsSize), preview.ClassCount)
+	assert.Equal(t, uint32(dexPreviewSampleLimit), preview.SampledClassDefs)
+	assert.Equal(t, uint32(dexPreviewSampleLimit), preview.ResolvedClassDescriptors)
+	require.Len(t, preview.TopPackages, 3)
+	assert.Equal(t, "com.example", preview.TopPackages[0].Name)
+	assert.Greater(t, preview.TopPackages[0].ClassCount, preview.TopPackages[1].ClassCount)
+	assert.Equal(t, []string{
+		"Lcom/example/Alpha;",
+		"Lcom/example/sub/Beta;",
+		"Lorg/other/Gamma;",
+	}, preview.ClassDescriptors)
+}
+
+func TestExplainVdexBytesCreatesChecksumOnlyDexPreviews(t *testing.T) {
+	const checksumOffset = uint32(60)
+	header := buildRawHeader("vdex", "027\x00", 4)
+	var sections []byte
+	sections = appendSectionHeader(sections, 0, checksumOffset, 8)
+	sections = appendSectionHeader(sections, 1, checksumOffset+8, 0)
+	sections = appendSectionHeader(sections, 2, checksumOffset+8, 0)
+	sections = appendSectionHeader(sections, 3, checksumOffset+8, 0)
+	raw := append(header, sections...)
+	checksums := make([]byte, 8)
+	binary.LittleEndian.PutUint32(checksums[0:], 0)
+	binary.LittleEndian.PutUint32(checksums[4:], 0x6348CB98)
+	raw = append(raw, checksums...)
+
+	previewMap, err := ExplainVdexBytes(raw)
+	require.NoError(t, err)
+	require.Len(t, previewMap.DexPreviews, 2)
+	assert.False(t, previewMap.DexPreviews[0].Embedded)
+	require.NotNil(t, previewMap.DexPreviews[0].LocationChecksum)
+	assert.Equal(t, uint32(0), *previewMap.DexPreviews[0].LocationChecksum)
+	require.NotNil(t, previewMap.DexPreviews[1].LocationChecksum)
+	assert.Equal(t, uint32(0x6348CB98), *previewMap.DexPreviews[1].LocationChecksum)
+}
+
+func TestExplainVdexBytesRejectsNonAdvancingDexSize(t *testing.T) {
+	dex := make([]byte, 112)
+	copy(dex, "dex\n035\x00")
+	binary.LittleEndian.PutUint32(dex[0x24:], 112)
+	raw := wrapDexSectionWithoutChecksums(dex)
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := ExplainVdexBytes(raw)
+		result <- err
+	}()
+	select {
+	case err := <-result:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("DEX parser did not terminate for file_size=0")
+	}
+}
+
+func TestExplainVdexBytesClampsOverflowingDexSize(t *testing.T) {
+	dex := make([]byte, 112)
+	copy(dex, "dex\n035\x00")
+	binary.LittleEndian.PutUint32(dex[0x20:], math.MaxUint32)
+	binary.LittleEndian.PutUint32(dex[0x24:], 112)
+	raw := wrapDexSectionWithoutChecksums(dex)
+
+	previewMap, err := ExplainVdexBytes(raw)
+	require.NoError(t, err)
+	require.Len(t, previewMap.DexPreviews, 1)
+	assert.True(t, previewMap.DexPreviews[0].Embedded)
+	for _, field := range previewMap.Fields {
+		assert.LessOrEqual(t, uint64(field.Offset)+uint64(field.Size), uint64(len(raw)))
+	}
+}
+
+func wrapDexSectionWithoutChecksums(dex []byte) []byte {
+	const dexOffset = uint32(60)
+	header := buildRawHeader("vdex", "027\x00", 4)
+	var sections []byte
+	sections = appendSectionHeader(sections, 0, dexOffset, 0)
+	sections = appendSectionHeader(sections, 1, dexOffset, uint32(len(dex)))
+	sections = appendSectionHeader(sections, 2, dexOffset+uint32(len(dex)), 0)
+	sections = appendSectionHeader(sections, 3, dexOffset+uint32(len(dex)), 0)
+	return append(append(header, sections...), dex...)
 }

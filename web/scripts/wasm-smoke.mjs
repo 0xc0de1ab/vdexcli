@@ -42,6 +42,10 @@ try {
   if (!result || result.error) throw new Error(result?.error ?? 'WASM API returned no result');
   if (!Array.isArray(result.fields)) throw new Error('fields must be an array');
   if (!Array.isArray(result.unmapped_gaps)) throw new Error('unmapped_gaps must be an array');
+  if (!Array.isArray(result.dex_previews)) throw new Error('dex_previews must be an array');
+  if (result.dex_previews.length !== 1) throw new Error(`unexpected dex preview count: ${result.dex_previews.length}`);
+  if (result.dex_previews[0].location_checksum !== 0xcafebabe) throw new Error('DEX location checksum preview mismatch');
+  if (result.dex_previews[0].embedded !== false) throw new Error('checksum-only DEX preview must not be embedded');
   if (result.total_bytes !== 64) throw new Error(`unexpected total_bytes: ${result.total_bytes}`);
 
   console.log(`WASM bridge OK: ${result.fields.length} fields, ${result.unmapped_gaps.length} gaps`);

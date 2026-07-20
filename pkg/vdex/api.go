@@ -7,7 +7,8 @@ import (
 // ExplainBytes parses raw VDEX bytes and returns a byte-level annotated FieldMap.
 //
 // Every byte in data is accounted for in the returned FieldMap — fields are
-// ordered by offset and gaps/padding are explicitly represented.
+// ordered by offset, gaps/padding are explicitly represented, and bounded DEX
+// identity/package previews are provided separately from physical byte fields.
 // This function is WASM-compatible (no filesystem access).
 //
 // Returns an error if data is too small, has an invalid magic, or uses an

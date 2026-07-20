@@ -363,16 +363,18 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 	}
 	// 3. Checksums Section (kind 0)
 	var checksumsCount int
+	var checksumValues []uint32
 	if cs, ok := sectionMap[0]; ok && cs.size > 0 && validByteRange(len(raw), cs.offset, cs.size) {
 		r.SetOffset(cs.offset)
 		count := cs.size / 4
 		checksumsCount = int(count)
 		for i := uint32(0); i < count; i++ {
-			r.ReadUint32LE(
+			checksum := r.ReadUint32LE(
 				fmt.Sprintf("vdex.checksums[%d]", i),
 				fmt.Sprintf("DEX[%d] checksum", i),
 				fmt.Sprintf("The location checksum for the DEX file at index %d.", i),
 			)
+			checksumValues = append(checksumValues, checksum)
 		}
 		// BUG-M4 fix: emit TypePadding for remainder bytes when size % 4 != 0.
 		remainder := cs.size % 4
@@ -393,17 +395,23 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 
 	// 4. DEX Section (kind 1)
 	var dexDefs []uint32
+	dexPreviews := make([]model.DexPreview, len(checksumValues))
+	for index := range checksumValues {
+		checksum := checksumValues[index]
+		dexPreviews[index] = model.DexPreview{Index: index, LocationChecksum: &checksum}
+	}
 	if ds, ok := sectionMap[1]; ok && ds.size > 0 && validByteRange(len(raw), ds.offset, ds.size) {
+		sectionEnd := uint64(ds.offset) + uint64(ds.size)
 		cursor := ds.offset
 		dexIdx := 0
 		expectedDexCount := checksumsCount
 
-		for (expectedDexCount == 0 && cursor < ds.offset+ds.size) || (expectedDexCount > 0 && dexIdx < expectedDexCount) {
+		for (expectedDexCount == 0 && uint64(cursor) < sectionEnd) || (expectedDexCount > 0 && dexIdx < expectedDexCount) {
 			r.SetOffset(cursor)
 			r.Align4(fmt.Sprintf("vdex.dexes.align[%d]", dexIdx))
 			cursor = r.Offset()
 
-			if cursor+112 > ds.offset+ds.size {
+			if uint64(cursor)+112 > sectionEnd {
 				break
 			}
 
@@ -439,24 +447,23 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 			_ = r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.data_size", dexIdx), "DEX data size", "Size of the data section in bytes.")
 			_ = r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.data_off", dexIdx), "DEX data offset", "Offset from start of the file to the data section.")
 
-			dexDefs = append(dexDefs, classDefsSize)
-
-			effectiveSize := fileSize
-			if dexStart+effectiveSize > ds.offset+ds.size {
-				effectiveSize = ds.offset + ds.size - dexStart
+			if fileSize < 112 {
+				break
 			}
+			effectiveSize := uint32(min(uint64(fileSize), sectionEnd-uint64(dexStart)))
+			if effectiveSize < 112 {
+				break
+			}
+			dexDefs = append(dexDefs, classDefsSize)
 
 			// Clamp header_size to header_size field value (usually 112)
 			if headerSize < 112 || headerSize > effectiveSize {
 				headerSize = 112
 			}
 
-			dexEnd := dexStart + effectiveSize
-
-			// Delegate all DEX payload annotation to the sub-function in explain_dex.go.
-			// This keeps ExplainVdex() focused on VDEX-level structure while the
-			// complexity of DEX internal table parsing lives in a dedicated file.
-			annotateDexPayload(dexPayloadParams{
+			// Delegate DEX payload annotation and semantic preview extraction to
+			// explain_dex.go so the byte map and interpreter use the same bounds.
+			params := dexPayloadParams{
 				raw:           raw,
 				r:             r,
 				dexIdx:        dexIdx,
@@ -478,10 +485,24 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 				linkOff:       linkOff,
 				linkSize:      linkSize,
 				mapOff:        mapOff,
-			})
-			_ = dexEnd // dexEnd is now computed inside annotateDexPayload
+			}
+			preview := buildDexPreview(params)
+			if dexIdx < len(checksumValues) {
+				checksum := checksumValues[dexIdx]
+				preview.LocationChecksum = &checksum
+			}
+			if dexIdx < len(dexPreviews) {
+				dexPreviews[dexIdx] = preview
+			} else {
+				dexPreviews = append(dexPreviews, preview)
+			}
+			annotateDexPayload(params)
 
-			cursor = dexStart + effectiveSize
+			nextCursor := uint64(dexStart) + uint64(effectiveSize)
+			if nextCursor <= uint64(cursor) || nextCursor > sectionEnd {
+				break
+			}
+			cursor = uint32(nextCursor)
 			dexIdx++
 		}
 	}
@@ -492,9 +513,9 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 		sectionEnd := sectionStart + int(vs.size)
 		r.SetOffset(vs.offset)
 
-		expectedDexCount := len(dexDefs)
+		expectedDexCount := checksumsCount
 		if expectedDexCount == 0 {
-			expectedDexCount = checksumsCount
+			expectedDexCount = len(dexDefs)
 		}
 
 		var dexBlockOffsets []uint32
@@ -646,9 +667,9 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 		sectionEnd := sectionStart + int(ts.size)
 		r.SetOffset(ts.offset)
 
-		expectedDexCount := len(dexDefs)
+		expectedDexCount := checksumsCount
 		if expectedDexCount == 0 {
-			expectedDexCount = checksumsCount
+			expectedDexCount = len(dexDefs)
 		}
 
 		for i := 0; i < expectedDexCount; i++ {
@@ -843,6 +864,7 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 		Fields:       finalFields,
 		TotalBytes:   fileSize,
 		UnmappedGaps: unmappedGaps,
+		DexPreviews:  dexPreviews,
 	}, nil
 }
 

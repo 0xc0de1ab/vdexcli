@@ -14,6 +14,14 @@ import (
 	"strings"
 
 	"github.com/0xc0de1ab/vdexcli/internal/binutil"
+	"github.com/0xc0de1ab/vdexcli/internal/model"
+)
+
+const (
+	dexPreviewClassLimit      = 3
+	dexPreviewDescriptorLimit = 4096
+	dexPreviewPackageLimit    = 3
+	dexPreviewSampleLimit     = 512
 )
 
 // dexSectionInfo describes a known DEX payload section (offset relative to
@@ -49,6 +57,134 @@ type dexPayloadParams struct {
 	linkOff       uint32
 	linkSize      uint32
 	mapOff        uint32
+}
+
+func buildDexPreview(p dexPayloadParams) model.DexPreview {
+	preview := model.DexPreview{Index: p.dexIdx, Embedded: true, ClassCount: p.classDefsSize}
+	if p.classDefsSize == 0 || !dexTableInRange(p, p.classDefsOff, p.classDefsSize, 32) ||
+		!dexTableInRange(p, p.typeIdsOff, p.typeIdsSize, 4) ||
+		!dexTableInRange(p, p.stringIdsOff, p.stringIdsSize, 4) {
+		return preview
+	}
+
+	type descriptorPreview struct {
+		descriptor  string
+		packageName string
+		packageOK   bool
+		valid       bool
+	}
+	packageCounts := make(map[string]uint32)
+	descriptorCache := make(map[uint32]descriptorPreview)
+	classExamples := make(map[string]struct{})
+	sampleCount := min(p.classDefsSize, uint32(dexPreviewSampleLimit))
+	preview.SampledClassDefs = sampleCount
+	for sampleIdx := uint32(0); sampleIdx < sampleCount; sampleIdx++ {
+		classDefIdx := sampleIdx
+		if sampleCount > 1 && p.classDefsSize > sampleCount {
+			classDefIdx = uint32(uint64(sampleIdx) * uint64(p.classDefsSize-1) / uint64(sampleCount-1))
+		}
+		classDefAt := uint64(p.dexStart) + uint64(p.classDefsOff) + uint64(classDefIdx)*32
+		classIdx := binary.LittleEndian.Uint32(p.raw[int(classDefAt) : int(classDefAt)+4])
+		resolved, cached := descriptorCache[classIdx]
+		if !cached {
+			resolved.descriptor, resolved.valid = resolveDexClassDescriptor(p, classIdx)
+			if resolved.valid {
+				resolved.packageName, resolved.packageOK = dexPackageName(resolved.descriptor)
+			}
+			descriptorCache[classIdx] = resolved
+		}
+		if !resolved.valid {
+			continue
+		}
+		preview.ResolvedClassDescriptors++
+		if len(preview.ClassDescriptors) < dexPreviewClassLimit {
+			if _, seen := classExamples[resolved.descriptor]; !seen {
+				classExamples[resolved.descriptor] = struct{}{}
+				preview.ClassDescriptors = append(preview.ClassDescriptors, resolved.descriptor)
+			}
+		}
+		if resolved.packageOK {
+			packageCounts[resolved.packageName]++
+		}
+	}
+
+	type packageCount struct {
+		name  string
+		count uint32
+	}
+	packages := make([]packageCount, 0, len(packageCounts))
+	for name, count := range packageCounts {
+		packages = append(packages, packageCount{name: name, count: count})
+	}
+	sort.Slice(packages, func(i, j int) bool {
+		if packages[i].count != packages[j].count {
+			return packages[i].count > packages[j].count
+		}
+		return packages[i].name < packages[j].name
+	})
+	preview.PackageCount = len(packages)
+	for _, pkg := range packages[:min(len(packages), dexPreviewPackageLimit)] {
+		preview.TopPackages = append(preview.TopPackages, model.DexPackagePreview{
+			Name:       pkg.name,
+			ClassCount: pkg.count,
+		})
+	}
+	return preview
+}
+
+func dexTableInRange(p dexPayloadParams, offset uint32, count uint32, itemSize uint32) bool {
+	if offset == 0 || count == 0 {
+		return false
+	}
+	tableEnd := uint64(offset) + uint64(count)*uint64(itemSize)
+	absEnd := uint64(p.dexStart) + tableEnd
+	return tableEnd <= uint64(p.effectiveSize) && absEnd <= uint64(len(p.raw))
+}
+
+func resolveDexClassDescriptor(p dexPayloadParams, classIdx uint32) (string, bool) {
+	if classIdx >= p.typeIdsSize {
+		return "", false
+	}
+	typeAt := uint64(p.dexStart) + uint64(p.typeIdsOff) + uint64(classIdx)*4
+	stringIdx := binary.LittleEndian.Uint32(p.raw[int(typeAt) : int(typeAt)+4])
+	if stringIdx >= p.stringIdsSize {
+		return "", false
+	}
+	stringIDAt := uint64(p.dexStart) + uint64(p.stringIdsOff) + uint64(stringIdx)*4
+	stringOffset := binary.LittleEndian.Uint32(p.raw[int(stringIDAt) : int(stringIDAt)+4])
+	stringAt := uint64(p.dexStart) + uint64(stringOffset)
+	dexEnd := uint64(p.dexStart) + uint64(p.effectiveSize)
+	if stringAt >= dexEnd || stringAt >= uint64(len(p.raw)) {
+		return "", false
+	}
+
+	_, lengthSize, err := binutil.ReadULEB128(p.raw, int(stringAt))
+	if err != nil {
+		return "", false
+	}
+	valueAt := stringAt + uint64(lengthSize)
+	if valueAt >= dexEnd || valueAt >= uint64(len(p.raw)) {
+		return "", false
+	}
+	limit := min(dexEnd, uint64(len(p.raw)), valueAt+dexPreviewDescriptorLimit)
+	nullAt := bytes.IndexByte(p.raw[int(valueAt):int(limit)], 0)
+	if nullAt < 0 {
+		return "", false
+	}
+	descriptor := string(p.raw[int(valueAt) : int(valueAt)+nullAt])
+	if !strings.HasPrefix(descriptor, "L") || !strings.HasSuffix(descriptor, ";") {
+		return "", false
+	}
+	return descriptor, true
+}
+
+func dexPackageName(descriptor string) (string, bool) {
+	className := strings.TrimSuffix(strings.TrimPrefix(descriptor, "L"), ";")
+	separator := strings.LastIndexByte(className, '/')
+	if separator <= 0 {
+		return "", false
+	}
+	return strings.ReplaceAll(className[:separator], "/", "."), true
 }
 
 // annotateMapList reads and decomposes a DEX map_list entry-by-entry into

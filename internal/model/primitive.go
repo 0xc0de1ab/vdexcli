@@ -75,10 +75,28 @@ type PrimitiveField struct {
 	Description string        `json:"description"`  // Detailed description
 }
 
+type DexPackagePreview struct {
+	Name       string `json:"name"`
+	ClassCount uint32 `json:"class_count"`
+}
+
+type DexPreview struct {
+	Index                    int                 `json:"index"`
+	LocationChecksum         *uint32             `json:"location_checksum,omitempty"`
+	Embedded                 bool                `json:"embedded"`
+	ClassCount               uint32              `json:"class_count"`
+	SampledClassDefs         uint32              `json:"sampled_class_defs"`
+	ResolvedClassDescriptors uint32              `json:"resolved_class_descriptors"`
+	PackageCount             int                 `json:"package_count"`
+	TopPackages              []DexPackagePreview `json:"top_packages,omitempty"`
+	ClassDescriptors         []string            `json:"class_descriptors,omitempty"`
+}
+
 type PrimitiveMap struct {
 	Fields       []*PrimitiveField `json:"fields"`
 	TotalBytes   uint32            `json:"total_bytes"`
 	UnmappedGaps []ByteRange       `json:"unmapped_gaps"` // Undescribed gap ranges
+	DexPreviews  []DexPreview      `json:"dex_previews,omitempty"`
 }
 
 // ByteRange marks a [Start, End) byte range within the file.
