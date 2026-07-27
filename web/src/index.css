@@ -511,7 +511,7 @@ button {
 
 .structure-workspace {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 350px;
+  grid-template-columns: minmax(0, 1fr) minmax(520px, 36vw);
   min-width: 0;
 }
 
@@ -710,9 +710,11 @@ button {
 }
 
 .byte-inspector {
+  min-width: 0;
   height: calc(100vh - 206px);
   min-height: 500px;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding: 14px;
   background: #191b1e;
   scrollbar-color: #454a52 #191b1e;
@@ -848,9 +850,10 @@ button {
 }
 
 .hex-dump {
+  width: 100%;
   margin-top: 7px;
   padding: 10px;
-  overflow-x: auto;
+  overflow: hidden;
   border: 1px solid #30343a;
   border-radius: 5px;
   color: #d7dbe1;
@@ -858,6 +861,62 @@ button {
   font-family: var(--mono);
   font-size: 10px;
   line-height: 1.65;
+  font-variant-numeric: tabular-nums;
+}
+
+.hex-dump-line {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 8ch minmax(0, 1fr) 16ch;
+  align-items: center;
+  gap: 10px;
+}
+
+.hex-dump-offset {
+  color: #929aa6;
+}
+
+.hex-dump-bytes,
+.hex-dump-ascii {
+  min-width: 0;
+  display: grid;
+  align-items: center;
+}
+
+.hex-dump.columns-16 .hex-dump-bytes {
+  grid-template-columns: repeat(16, 2ch);
+  gap: 0.55ch;
+}
+
+.hex-dump.columns-16 .hex-dump-ascii {
+  grid-template-columns: repeat(16, 1ch);
+  color: #aeb5bf;
+}
+
+.hex-dump.columns-8 .hex-dump-bytes {
+  grid-template-columns: repeat(8, 2ch);
+  column-gap: 0.8ch;
+}
+
+.hex-byte,
+.hex-ascii-byte {
+  min-width: 0;
+  text-align: center;
+}
+
+.hex-byte.selected,
+.hex-ascii-byte.selected {
+  color: #ffffff;
+  background: #2f6fae;
+  box-shadow: inset 0 -2px 0 #79b9ff;
+}
+
+.hex-byte.selected {
+  border-radius: 2px;
+}
+
+.hex-dump-empty {
+  color: var(--subtle);
 }
 
 .hex-truncated {
@@ -1022,6 +1081,30 @@ button {
     width: 40px;
     height: 40px;
     flex-basis: 40px;
+  }
+
+  .byte-inspector {
+    padding: 12px;
+  }
+
+  .hex-dump {
+    padding: 8px;
+    font-size: 10px;
+  }
+
+  .hex-dump-line {
+    grid-template-columns: 8ch minmax(0, 1fr);
+    align-items: start;
+    gap: 6px;
+    padding: 2px 0;
+  }
+
+  .hex-dump-bytes {
+    row-gap: 2px;
+  }
+
+  .hex-dump-ascii {
+    display: none;
   }
 }
 
