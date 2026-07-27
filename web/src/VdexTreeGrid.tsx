@@ -48,8 +48,30 @@ interface FlatTree {
   indexById: Map<number, number>;
 }
 
+interface HexDumpByte {
+  offset: number;
+  hex: string;
+  ascii: string;
+  selected: boolean;
+}
+
+interface HexDumpRow {
+  offset: number;
+  bytes: HexDumpByte[];
+}
+
+interface HexDumpView {
+  rows: HexDumpRow[];
+  shownBytes: number;
+  highlightedBytes: number;
+  selectedBytes: number;
+}
+
 const HEX_PREVIEW_BYTES = 16;
 const INSPECTOR_BYTES = 256;
+const DESKTOP_HEX_DUMP_COLUMNS = 16;
+const MOBILE_HEX_DUMP_COLUMNS = 8;
+const HEX_DUMP_CONTEXT_ROWS = 1;
 const MAX_VISIBLE_ROWS = 2048;
 const ROWS_BEFORE_FOCUS = 512;
 
@@ -250,21 +272,56 @@ const defaultExpandedNodes = (
   return expanded;
 };
 
-const buildHexDump = (sourceBytes: Uint8Array, node: StructureNode): string => {
+const buildHexDump = (
+  sourceBytes: Uint8Array,
+  node: StructureNode,
+  columns: number,
+): HexDumpView => {
   const range = displayRange(node);
-  if (range.span === 0 || range.offset >= sourceBytes.length) return 'No bytes in this range.';
-  const end = Math.min(sourceBytes.length, range.offset + range.span, range.offset + INSPECTOR_BYTES);
-  const lines: string[] = [];
-  for (let offset = range.offset; offset < end; offset += 16) {
-    const row = sourceBytes.subarray(offset, Math.min(offset + 16, end));
-    const hex = Array.from(row, (byte) => byte.toString(16).padStart(2, '0').toUpperCase())
-      .join(' ')
-      .padEnd(47, ' ');
-    const ascii = Array.from(row, (byte) => byte >= 32 && byte <= 126 ? String.fromCharCode(byte) : '.')
-      .join('');
-    lines.push(`${toHex(offset)}  ${hex}  ${ascii}`);
+  if (range.span === 0 || range.offset >= sourceBytes.length) {
+    return { rows: [], shownBytes: 0, highlightedBytes: 0, selectedBytes: 0 };
   }
-  return lines.join('\n');
+
+  const selectionStart = range.offset;
+  const selectionEnd = Math.min(sourceBytes.length, range.offset + range.span);
+  const alignedStart = Math.floor(selectionStart / columns) * columns;
+  const contextBytes = HEX_DUMP_CONTEXT_ROWS * columns;
+  let viewStart = Math.max(0, alignedStart - contextBytes);
+  let viewEnd = Math.min(
+    sourceBytes.length,
+    Math.ceil(selectionEnd / columns) * columns + contextBytes,
+  );
+
+  if (viewEnd - viewStart > INSPECTOR_BYTES) {
+    viewStart = alignedStart;
+    viewEnd = Math.min(sourceBytes.length, viewStart + INSPECTOR_BYTES);
+  }
+
+  const rows: HexDumpRow[] = [];
+  let highlightedBytes = 0;
+  for (let rowOffset = viewStart; rowOffset < viewEnd; rowOffset += columns) {
+    const rowEnd = Math.min(rowOffset + columns, viewEnd);
+    const bytes: HexDumpByte[] = [];
+    for (let offset = rowOffset; offset < rowEnd; offset += 1) {
+      const value = sourceBytes[offset];
+      const selected = offset >= selectionStart && offset < selectionEnd;
+      if (selected) highlightedBytes += 1;
+      bytes.push({
+        offset,
+        hex: value.toString(16).padStart(2, '0').toUpperCase(),
+        ascii: value >= 32 && value <= 126 ? String.fromCharCode(value) : '.',
+        selected,
+      });
+    }
+    rows.push({ offset: rowOffset, bytes });
+  }
+
+  return {
+    rows,
+    shownBytes: Math.max(0, viewEnd - viewStart),
+    highlightedBytes,
+    selectedBytes: Math.max(0, selectionEnd - selectionStart),
+  };
 };
 
 export default function VdexTreeGrid({
@@ -286,6 +343,11 @@ export default function VdexTreeGrid({
   const [offsetInput, setOffsetInput] = useState('');
   const [offsetError, setOffsetError] = useState('');
   const [treeError, setTreeError] = useState('');
+  const [hexDumpColumns, setHexDumpColumns] = useState(
+    () => window.matchMedia('(max-width: 760px)').matches
+      ? MOBILE_HEX_DUMP_COLUMNS
+      : DESKTOP_HEX_DUMP_COLUMNS,
+  );
   const gridRef = useRef<HTMLDivElement | null>(null);
   const treeScrollRef = useRef<HTMLDivElement | null>(null);
   const interactionGenerationRef = useRef(0);
@@ -306,6 +368,7 @@ export default function VdexTreeGrid({
   useEffect(() => {
     const mobile = window.matchMedia('(max-width: 760px)');
     const revealKeyColumn = () => {
+      setHexDumpColumns(mobile.matches ? MOBILE_HEX_DUMP_COLUMNS : DESKTOP_HEX_DUMP_COLUMNS);
       const scroller = treeScrollRef.current;
       if (!mobile.matches || !scroller) return;
       const headers = scroller.querySelectorAll<HTMLElement>('[role="columnheader"]');
@@ -325,8 +388,8 @@ export default function VdexTreeGrid({
   const visible = useMemo(() => visibleWindow(flatTree, focusedId), [flatTree, focusedId]);
   const rows = visible.rows;
   const selectedHexDump = useMemo(
-    () => buildHexDump(sourceBytes, selection.node),
-    [selection, sourceBytes],
+    () => buildHexDump(sourceBytes, selection.node, hexDumpColumns),
+    [hexDumpColumns, selection, sourceBytes],
   );
 
   const toggleNode = async (node: StructureNode) => {
@@ -451,12 +514,7 @@ export default function VdexTreeGrid({
 
   const node = selection.node;
   const selectedRange = displayRange(node);
-  const previewEnd = Math.min(
-    sourceBytes.length,
-    selectedRange.offset + selectedRange.span,
-    selectedRange.offset + INSPECTOR_BYTES,
-  );
-  const isInspectorTruncated = previewEnd < selectedRange.offset + selectedRange.span;
+  const isInspectorTruncated = selectedHexDump.highlightedBytes < selectedHexDump.selectedBytes;
 
   return (
     <section className="structure-section" aria-labelledby="structure-title">
@@ -692,11 +750,49 @@ export default function VdexTreeGrid({
             <span className="eyebrow">
               {node.declared_size !== undefined ? 'Declared section bytes' : node.contiguous ? 'Physical bytes' : 'First mapped field'}
             </span>
-            <span>{Math.max(0, previewEnd - selectedRange.offset).toLocaleString()} shown</span>
+            <span>
+              {selectedHexDump.highlightedBytes.toLocaleString()} highlighted · {selectedHexDump.shownBytes.toLocaleString()} shown
+            </span>
           </div>
-          <pre className="hex-dump">{selectedHexDump}</pre>
+          <div
+            className={`hex-dump columns-${hexDumpColumns}`}
+            aria-label={`Hex dump for ${selection.path}; ${selectedHexDump.highlightedBytes.toLocaleString()} selected bytes highlighted`}
+          >
+            {selectedHexDump.rows.length === 0 ? (
+              <p className="hex-dump-empty">No bytes in this range.</p>
+            ) : selectedHexDump.rows.map((row) => (
+              <div className="hex-dump-line" key={row.offset}>
+                <span className="hex-dump-offset">{toHex(row.offset)}</span>
+                <span className="hex-dump-bytes">
+                  {row.bytes.map((byte) => (
+                    <span
+                      className={`hex-byte${byte.selected ? ' selected' : ''}`}
+                      data-byte-offset={byte.offset}
+                      data-selected={byte.selected || undefined}
+                      key={byte.offset}
+                      title={`0x${toHex(byte.offset)} · ${byte.hex}${byte.selected ? ` · selected by ${selection.path}` : ''}`}
+                    >
+                      {byte.hex}
+                    </span>
+                  ))}
+                </span>
+                <span className="hex-dump-ascii" aria-hidden="true">
+                  {row.bytes.map((byte) => (
+                    <span
+                      className={`hex-ascii-byte${byte.selected ? ' selected' : ''}`}
+                      key={byte.offset}
+                    >
+                      {byte.ascii}
+                    </span>
+                  ))}
+                </span>
+              </div>
+            ))}
+          </div>
           {isInspectorTruncated && (
-            <p className="hex-truncated">Showing the first {INSPECTOR_BYTES} bytes of this physical span.</p>
+            <p className="hex-truncated">
+              Highlighting the first {selectedHexDump.highlightedBytes.toLocaleString()} of {selectedHexDump.selectedBytes.toLocaleString()} selected bytes.
+            </p>
           )}
           {!node.contiguous && node.declared_size === undefined && (
             <p className="hex-truncated">This group is fragmented. Its child rows identify the remaining mapped ranges.</p>
