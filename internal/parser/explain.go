@@ -11,6 +11,8 @@ import (
 	"github.com/0xc0de1ab/vdexcli/internal/model"
 )
 
+const maxExplainSections = 64
+
 // accessFlagsDescription returns a human-readable description of DEX class access_flags.
 // See https://source.android.com/docs/core/runtime/dex-format#access-flags
 func accessFlagsDescription(flags uint32) string {
@@ -306,6 +308,81 @@ type sectionInfo struct {
 	size   uint32
 }
 
+func validateExplainSections(fileSize int, headerEnd uint64, sections []sectionInfo) error {
+	nonEmpty := make([]sectionInfo, 0, len(sections))
+	seenKinds := make(map[uint32]struct{}, len(sections))
+	for _, section := range sections {
+		if _, exists := seenKinds[section.kind]; exists {
+			return fmt.Errorf("duplicate VDEX section kind %d", section.kind)
+		}
+		seenKinds[section.kind] = struct{}{}
+		if section.size == 0 {
+			continue
+		}
+		end := uint64(section.offset) + uint64(section.size)
+		if uint64(section.offset) < headerEnd {
+			return fmt.Errorf("VDEX section kind %d overlaps the header/table", section.kind)
+		}
+		if end > uint64(fileSize) {
+			return fmt.Errorf(
+				"VDEX section kind %d exceeds file bounds: offset=%#x size=%#x",
+				section.kind, section.offset, section.size,
+			)
+		}
+		nonEmpty = append(nonEmpty, section)
+	}
+
+	sort.Slice(nonEmpty, func(i, j int) bool {
+		if nonEmpty[i].offset == nonEmpty[j].offset {
+			return nonEmpty[i].size < nonEmpty[j].size
+		}
+		return nonEmpty[i].offset < nonEmpty[j].offset
+	})
+	for i := 1; i < len(nonEmpty); i++ {
+		previous := nonEmpty[i-1]
+		current := nonEmpty[i]
+		if uint64(current.offset) < uint64(previous.offset)+uint64(previous.size) {
+			return fmt.Errorf(
+				"VDEX section kind %d overlaps section kind %d",
+				current.kind, previous.kind,
+			)
+		}
+	}
+	return nil
+}
+
+func validateExplainDexTable(name string, offset, count, itemSize, dexSize uint32) error {
+	if count == 0 {
+		return nil
+	}
+	if count > maxExplainCollectionItems {
+		return fmt.Errorf("DEX %s count %d exceeds explain limit %d", name, count, maxExplainCollectionItems)
+	}
+	if offset == 0 {
+		return fmt.Errorf("DEX %s has non-zero count %d with zero offset", name, count)
+	}
+	end := uint64(offset) + uint64(count)*uint64(itemSize)
+	if end > uint64(dexSize) {
+		return fmt.Errorf(
+			"DEX %s table exceeds file bounds: offset=%#x count=%d item_size=%d file_size=%#x",
+			name, offset, count, itemSize, dexSize,
+		)
+	}
+	return nil
+}
+
+func validDexVersion(raw string) bool {
+	if len(raw) != 4 || raw[3] != 0 {
+		return false
+	}
+	switch raw[:3] {
+	case "035", "037", "038", "039", "040", "041":
+		return true
+	default:
+		return false
+	}
+}
+
 // ExplainVdexBytes parses raw VDEX bytes and returns a byte-level annotated field map.
 // Every byte in data is accounted for in the returned PrimitiveMap.
 // This is the primary entry point and is compatible with all build targets including WASM.
@@ -340,8 +417,17 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 			versionStr,
 		)
 	}
+	if versionStr != model.VdexCurrentVersion {
+		return nil, fmt.Errorf(
+			"ExplainVdex: unsupported VDEX version %q (supported: %s)",
+			versionStr, model.VdexCurrentVersion,
+		)
+	}
 
 	numSections := r.ReadUint32LE("vdex.header.sections", "Number of sections", "Total number of sections defined in the section table.")
+	if numSections > maxExplainSections {
+		return nil, fmt.Errorf("VDEX section count %d exceeds explain limit %d", numSections, maxExplainSections)
+	}
 
 	// 2. Section Headers Table
 	// BUG-H3 fix: use uint64 arithmetic to prevent uint32 overflow when numSections is large.
@@ -351,15 +437,20 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 	}
 
 	sectionMap := make(map[uint32]sectionInfo)
+	sections := make([]sectionInfo, 0, numSections)
 	for i := uint32(0); i < numSections; i++ {
 		kind := r.ReadUint32LE(fmt.Sprintf("vdex.sections[%d].kind", i), "Section kind", fmt.Sprintf("The identifier of the section type for section %d.", i))
 		offset := r.ReadUint32LE(fmt.Sprintf("vdex.sections[%d].offset", i), "Section offset", fmt.Sprintf("File offset where section %d starts.", i))
 		size := r.ReadUint32LE(fmt.Sprintf("vdex.sections[%d].size", i), "Section size", fmt.Sprintf("The size in bytes of section %d.", i))
 
-		// BUG-M6 fix: keep first occurrence; reference parser (ParseVdex) also uses the first.
+		section := sectionInfo{kind: kind, offset: offset, size: size}
+		sections = append(sections, section)
 		if _, exists := sectionMap[kind]; !exists {
-			sectionMap[kind] = sectionInfo{kind: kind, offset: offset, size: size}
+			sectionMap[kind] = section
 		}
+	}
+	if err := validateExplainSections(len(raw), headerEnd64, sections); err != nil {
+		return nil, err
 	}
 	// 3. Checksums Section (kind 0)
 	var checksumsCount int
@@ -367,6 +458,9 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 	if cs, ok := sectionMap[0]; ok && cs.size > 0 && validByteRange(len(raw), cs.offset, cs.size) {
 		r.SetOffset(cs.offset)
 		count := cs.size / 4
+		if count > maxExplainCollectionItems {
+			return nil, fmt.Errorf("VDEX checksum count %d exceeds explain limit %d", count, maxExplainCollectionItems)
+		}
 		checksumsCount = int(count)
 		for i := uint32(0); i < count; i++ {
 			checksum := r.ReadUint32LE(
@@ -419,16 +513,19 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 
 			// BUG-M3 fix: parse DEX magic (4B) and version (4B) as separate TypeMagic fields.
 			dexMagicStr := r.ReadMagic(4, fmt.Sprintf("vdex.dex[%d].header.magic", dexIdx), "DEX magic signature", "Identifies the file as a DEX file (must be 'dex\\n').")
-			_ = r.ReadMagic(4, fmt.Sprintf("vdex.dex[%d].header.version", dexIdx), "DEX version", "DEX format version (e.g. '035\\x00').")
+			dexVersion := r.ReadMagic(4, fmt.Sprintf("vdex.dex[%d].header.version", dexIdx), "DEX version", "DEX format version (e.g. '035\\x00').")
 			if !bytes.HasPrefix([]byte(dexMagicStr), []byte("dex\n")) {
-				break
+				return nil, fmt.Errorf("dex[%d] at %#x has invalid magic %q", dexIdx, dexStart, dexMagicStr)
+			}
+			if !validDexVersion(dexVersion) {
+				return nil, fmt.Errorf("dex[%d] at %#x has invalid version %q", dexIdx, dexStart, dexVersion)
 			}
 
 			_ = r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.checksum", dexIdx), "DEX checksum", "Adler32 checksum of the DEX file.")
 			_ = r.ReadBytes(20, fmt.Sprintf("vdex.dex[%d].header.signature", dexIdx), "DEX SHA-1 signature", "SHA-1 signature of the DEX file (20 bytes).")
 			fileSize := r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.file_size", dexIdx), "DEX file size", "Declared size of the DEX file in bytes.")
 			headerSize := r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.header_size", dexIdx), "DEX header size", "Size of the DEX header in bytes (typically 112).")
-			_ = r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.endian_tag", dexIdx), "DEX endian tag", "Endianness tag (0x12345678 = little-endian).")
+			endianTag := r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.endian_tag", dexIdx), "DEX endian tag", "Endianness tag (0x12345678 = little-endian).")
 			linkSize := r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.link_size", dexIdx), "DEX link size", "Size of the link section in bytes (0 if unused).")
 			linkOff := r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.link_off", dexIdx), "DEX link offset", "File offset of the link section (0 if unused).")
 			mapOff := r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.map_off", dexIdx), "DEX map offset", "File offset of the map_list item.")
@@ -448,17 +545,49 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 			_ = r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.data_off", dexIdx), "DEX data offset", "Offset from start of the file to the data section.")
 
 			if fileSize < 112 {
-				break
+				return nil, fmt.Errorf("dex[%d] at %#x has invalid file_size %#x", dexIdx, dexStart, fileSize)
 			}
-			effectiveSize := uint32(min(uint64(fileSize), sectionEnd-uint64(dexStart)))
-			if effectiveSize < 112 {
-				break
+			available := sectionEnd - uint64(dexStart)
+			if uint64(fileSize) > available {
+				return nil, fmt.Errorf(
+					"dex[%d] at %#x declares file_size %#x with only %#x bytes available",
+					dexIdx, dexStart, fileSize, available,
+				)
 			}
+			effectiveSize := fileSize
 			dexDefs = append(dexDefs, classDefsSize)
 
-			// Clamp header_size to header_size field value (usually 112)
-			if headerSize < 112 || headerSize > effectiveSize {
-				headerSize = 112
+			if headerSize != 112 {
+				return nil, fmt.Errorf("dex[%d] at %#x has unsupported header_size %#x", dexIdx, dexStart, headerSize)
+			}
+			if endianTag != 0x12345678 {
+				return nil, fmt.Errorf("dex[%d] at %#x has unsupported endian tag %#x", dexIdx, dexStart, endianTag)
+			}
+			for _, table := range []struct {
+				name                string
+				offset, count, size uint32
+			}{
+				{"string_ids", stringIdsOff, stringIdsSize, 4},
+				{"type_ids", typeIdsOff, typeIdsSize, 4},
+				{"proto_ids", protoIdsOff, protoIdsSize, 12},
+				{"field_ids", fieldIdsOff, fieldIdsSize, 8},
+				{"method_ids", methodIdsOff, methodIdsSize, 8},
+				{"class_defs", classDefsOff, classDefsSize, 32},
+			} {
+				if err := validateExplainDexTable(table.name, table.offset, table.count, table.size, effectiveSize); err != nil {
+					return nil, fmt.Errorf("dex[%d] at %#x: %w", dexIdx, dexStart, err)
+				}
+			}
+			if linkSize > 0 {
+				if linkOff == 0 || uint64(linkOff)+uint64(linkSize) > uint64(effectiveSize) {
+					return nil, fmt.Errorf(
+						"dex[%d] at %#x has invalid link range offset=%#x size=%#x",
+						dexIdx, dexStart, linkOff, linkSize,
+					)
+				}
+			}
+			if mapOff > 0 && uint64(mapOff)+4 > uint64(effectiveSize) {
+				return nil, fmt.Errorf("dex[%d] at %#x has invalid map_off %#x", dexIdx, dexStart, mapOff)
 			}
 
 			// Delegate DEX payload annotation and semantic preview extraction to
@@ -517,12 +646,22 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 		if expectedDexCount == 0 {
 			expectedDexCount = len(dexDefs)
 		}
+		if expectedDexCount > maxExplainCollectionItems {
+			return nil, fmt.Errorf(
+				"verifier DEX count %d exceeds explain limit %d",
+				expectedDexCount, maxExplainCollectionItems,
+			)
+		}
+		indexBytes := uint64(expectedDexCount) * 4
+		if indexBytes > uint64(vs.size) {
+			return nil, fmt.Errorf(
+				"verifier DEX offset table needs %d bytes, section has %d",
+				indexBytes, vs.size,
+			)
+		}
 
 		var dexBlockOffsets []uint32
 		for i := 0; i < expectedDexCount; i++ {
-			if r.Offset()+4 > uint32(sectionEnd) {
-				break
-			}
 			off := r.ReadUint32LE(
 				fmt.Sprintf("vdex.verifier.dex_offsets[%d]", i),
 				"Verifier DEX offset",
@@ -530,39 +669,63 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 			)
 			dexBlockOffsets = append(dexBlockOffsets, off)
 		}
+		for i, relative := range dexBlockOffsets {
+			if uint64(relative) < indexBytes || relative >= vs.size {
+				return nil, fmt.Errorf(
+					"verifier dex[%d] block offset %#x is outside payload range [%#x,%#x)",
+					i, relative, indexBytes, vs.size,
+				)
+			}
+			if relative%4 != 0 {
+				return nil, fmt.Errorf("verifier dex[%d] block offset %#x is not 4-byte aligned", i, relative)
+			}
+			if i > 0 && relative <= dexBlockOffsets[i-1] {
+				return nil, fmt.Errorf("verifier DEX block offsets are not strictly increasing at dex %d", i)
+			}
+		}
 
 		for i, relative := range dexBlockOffsets {
 			blockOff := sectionStart + int(relative)
-			if blockOff < sectionStart || blockOff >= sectionEnd {
-				continue
+			blockEnd := sectionEnd
+			if i+1 < len(dexBlockOffsets) {
+				blockEnd = sectionStart + int(dexBlockOffsets[i+1])
 			}
 
 			var numClass int
 			if i < len(dexDefs) {
+				if dexDefs[i] > maxExplainCollectionItems {
+					return nil, fmt.Errorf(
+						"verifier dex[%d] class count %d exceeds explain limit %d",
+						i, dexDefs[i], maxExplainCollectionItems,
+					)
+				}
 				numClass = int(dexDefs[i])
 			}
 
 			if numClass == 0 {
-				numClass = inferClassCount(raw, sectionStart, blockOff, sectionEnd)
+				numClass = inferClassCount(raw, sectionStart, blockOff, blockEnd)
+			}
+			if numClass > maxExplainCollectionItems {
+				return nil, fmt.Errorf(
+					"verifier dex[%d] inferred class count %d exceeds explain limit %d",
+					i, numClass, maxExplainCollectionItems,
+				)
+			}
+			classTableBytes := uint64(numClass+1) * 4
+			if uint64(blockOff)+classTableBytes > uint64(blockEnd) {
+				return nil, fmt.Errorf("verifier dex[%d] class offset table exceeds its block", i)
 			}
 
 			r.SetOffset(uint32(blockOff))
 
 			var classOffsets []uint32
 			for c := 0; c <= numClass; c++ {
-				if r.Offset()+4 > uint32(sectionEnd) {
-					break
-				}
 				off := r.ReadUint32LE(
 					fmt.Sprintf("vdex.verifier.dex[%d].class_offsets[%d]", i, c),
 					"Class verifier offset",
 					fmt.Sprintf("Section-absolute offset to assignability pairs for class %d.", c),
 				)
 				classOffsets = append(classOffsets, off)
-			}
-
-			if len(classOffsets) < numClass+1 {
-				continue
 			}
 
 			maxSetEnd := blockOff + 4*(numClass+1)
@@ -582,8 +745,11 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 
 				setStart := sectionStart + int(o)
 				setEnd := sectionStart + int(classOffsets[nextValid])
-				if setStart < blockOff || setEnd > sectionEnd || setEnd < setStart {
-					continue
+				if setStart < blockOff+4*(numClass+1) || setEnd > blockEnd || setEnd < setStart {
+					return nil, fmt.Errorf(
+						"verifier dex[%d] class[%d] has malformed set bounds [%#x,%#x)",
+						i, classIdx, setStart, setEnd,
+					)
 				}
 
 				if setStart > maxSetEnd {
@@ -593,23 +759,39 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 				r.SetOffset(uint32(setStart))
 				pairIdx := 0
 				for r.Offset() < uint32(setEnd) {
-					// BUG-C1 fix: break on malformed LEB128 (n==0 means offset won't
-					// advance, which causes an infinite loop on malformed input).
+					if _, _, err := binutil.ReadULEB128(raw[:setEnd], int(r.Offset())); err != nil {
+						return nil, fmt.Errorf(
+							"verifier dex[%d] class[%d] pair[%d] destination exceeds set bounds",
+							i, classIdx, pairIdx,
+						)
+					}
 					_, destN := r.ReadUleb128(
 						fmt.Sprintf("vdex.verifier.dex[%d].class[%d].pair[%d].dest", i, classIdx, pairIdx),
 						"Destination type index",
 						"The destination type index for assignability verification.",
 					)
-					if destN == 0 {
-						break // malformed LEB128 — stop to avoid infinite loop
+					if destN == 0 || r.Offset() >= uint32(setEnd) {
+						return nil, fmt.Errorf(
+							"verifier dex[%d] class[%d] pair[%d] is missing a bounded source",
+							i, classIdx, pairIdx,
+						)
+					}
+					if _, _, err := binutil.ReadULEB128(raw[:setEnd], int(r.Offset())); err != nil {
+						return nil, fmt.Errorf(
+							"verifier dex[%d] class[%d] pair[%d] source exceeds set bounds",
+							i, classIdx, pairIdx,
+						)
 					}
 					_, srcN := r.ReadUleb128(
 						fmt.Sprintf("vdex.verifier.dex[%d].class[%d].pair[%d].src", i, classIdx, pairIdx),
 						"Source type index",
 						"The source type index for assignability verification.",
 					)
-					if srcN == 0 {
-						break // malformed LEB128 — stop to avoid infinite loop
+					if srcN == 0 || r.Offset() > uint32(setEnd) {
+						return nil, fmt.Errorf(
+							"verifier dex[%d] class[%d] pair[%d] source exceeds set bounds",
+							i, classIdx, pairIdx,
+						)
 					}
 					pairIdx++
 				}
@@ -623,18 +805,27 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 			r.Align4(fmt.Sprintf("vdex.verifier.dex[%d].align", i))
 
 			cursor := int(r.Offset())
-			if cursor+4 <= sectionEnd {
+			if cursor > blockEnd {
+				return nil, fmt.Errorf("verifier dex[%d] pair data exceeds its block", i)
+			}
+			if cursor+4 <= blockEnd {
 				numStrings := r.ReadUint32LE(
 					fmt.Sprintf("vdex.verifier.dex[%d].num_extra_strings", i),
 					"Extra strings count",
 					"Number of extra strings in the verifier deps block.",
 				)
+				if numStrings > maxExplainCollectionItems {
+					return nil, fmt.Errorf(
+						"verifier dex[%d] extra string count %d exceeds explain limit %d",
+						i, numStrings, maxExplainCollectionItems,
+					)
+				}
+				if uint64(r.Offset())+uint64(numStrings)*4 > uint64(blockEnd) {
+					return nil, fmt.Errorf("verifier dex[%d] extra string offset table exceeds its block", i)
+				}
 
 				var extraStringOffsets []uint32
-				for s := 0; s < int(numStrings); s++ {
-					if r.Offset()+4 > uint32(sectionEnd) {
-						break
-					}
+				for s := uint32(0); s < numStrings; s++ {
 					off := r.ReadUint32LE(
 						fmt.Sprintf("vdex.verifier.dex[%d].extra_string_offsets[%d]", i, s),
 						"Extra string offset",
@@ -643,19 +834,26 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 					extraStringOffsets = append(extraStringOffsets, off)
 				}
 
+				seenExtraOffsets := make(map[uint32]struct{}, len(extraStringOffsets))
 				for s, rel := range extraStringOffsets {
 					abs := sectionStart + int(rel)
-					if abs >= blockOff && abs < sectionEnd {
-						r.SetOffset(uint32(abs))
-						// BUG-H2 fix: use ReadCStringBounded with sectionEnd to prevent
-						// crossing into the next section when the string is unterminated.
-						r.ReadCStringBounded(
-							uint32(sectionEnd),
-							fmt.Sprintf("vdex.verifier.dex[%d].extra_strings[%d]", i, s),
-							"Extra string",
-							"Extra string used by verifier dependencies.",
+					if abs < blockOff || abs >= blockEnd {
+						return nil, fmt.Errorf(
+							"verifier dex[%d] extra string[%d] offset %#x is outside its block",
+							i, s, rel,
 						)
 					}
+					if _, duplicate := seenExtraOffsets[rel]; duplicate {
+						continue
+					}
+					seenExtraOffsets[rel] = struct{}{}
+					r.SetOffset(uint32(abs))
+					r.ReadCStringBounded(
+						uint32(blockEnd),
+						fmt.Sprintf("vdex.verifier.dex[%d].extra_strings[%d]", i, s),
+						"Extra string",
+						"Extra string used by verifier dependencies.",
+					)
 				}
 			}
 		}
@@ -694,6 +892,12 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 			}
 
 			count := size / 8
+			if count > maxExplainCollectionItems {
+				return nil, fmt.Errorf(
+					"type-lookup dex[%d] entry count %d exceeds explain limit %d",
+					i, count, maxExplainCollectionItems,
+				)
+			}
 
 			// I-04 fix: Compute maskBits from class_defs_size of the corresponding DEX.
 			// maskBits determines the bit-field layout of packed_data:

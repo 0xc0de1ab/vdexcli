@@ -21,14 +21,18 @@ import (
 )
 
 func buildSyntheticDex(classDefsSize uint32) []byte {
-	dex := make([]byte, 0x70)
+	dexSize := uint32(0x70) + classDefsSize*32
+	dex := make([]byte, dexSize)
 	copy(dex[0:4], "dex\n")
 	copy(dex[4:8], "035\x00")
 	binary.LittleEndian.PutUint32(dex[0x08:], 0xABCD1234)
-	binary.LittleEndian.PutUint32(dex[0x20:], 0x70)
+	binary.LittleEndian.PutUint32(dex[0x20:], dexSize)
 	binary.LittleEndian.PutUint32(dex[0x24:], 0x70)
 	binary.LittleEndian.PutUint32(dex[0x28:], 0x12345678)
 	binary.LittleEndian.PutUint32(dex[0x60:], classDefsSize)
+	if classDefsSize > 0 {
+		binary.LittleEndian.PutUint32(dex[0x64:], 0x70)
+	}
 	return dex
 }
 

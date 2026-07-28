@@ -111,3 +111,32 @@ func TestComputeByteCoverage_RangesAreSorted(t *testing.T) {
 			"ranges must be sorted by offset")
 	}
 }
+
+func TestComputeByteCoverage_ClampsOutOfRangeSections(t *testing.T) {
+	header := model.VdexHeader{NumSections: 1}
+	sections := []model.VdexSection{
+		{Kind: 99, Offset: 20, Size: ^uint32(0)},
+		{Kind: 100, Offset: 1000, Size: 100},
+	}
+
+	cov := ComputeByteCoverage(32, header, sections, nil)
+
+	assert.Equal(t, 32, cov.ParsedBytes)
+	assert.Equal(t, 0, cov.UnparsedBytes)
+	assert.InDelta(t, 100.0, cov.CoveragePercent, 0.01)
+	for _, item := range cov.Ranges {
+		assert.GreaterOrEqual(t, item.Offset, 0)
+		assert.LessOrEqual(t, item.Offset+item.Size, cov.FileSize)
+	}
+}
+
+func TestComputeByteCoverage_LegacyHeaderUsesTwentyEightBytes(t *testing.T) {
+	header := model.VdexHeader{Version: "026", NumSections: 0}
+
+	cov := ComputeByteCoverage(28, header, nil, nil)
+
+	assert.Equal(t, 28, cov.ParsedBytes)
+	assert.Equal(t, 0, cov.UnparsedBytes)
+	require.Len(t, cov.Ranges, 1)
+	assert.Equal(t, 28, cov.Ranges[0].Size)
+}

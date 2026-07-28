@@ -10,24 +10,37 @@ import (
 // ParseClassDefs reads class_def entries and resolves each class_idx
 // through type_ids → string_ids to produce a descriptor preview list
 // (capped at model.MaxClassPreview).
-func ParseClassDefs(raw []byte, strs []string, typeIds int, typeIdsOff int, classDefsOff int, classDefsSize int) ([]string, error) {
+func ParseClassDefs(
+	raw []byte,
+	strs []string,
+	typeIds uint32,
+	typeIdsOff uint32,
+	classDefsOff uint32,
+	classDefsSize uint32,
+) ([]string, error) {
 	if classDefsSize == 0 {
 		return nil, nil
 	}
-	if typeIdsOff < 0 || typeIdsOff+typeIds*4 > len(raw) {
+	typeIDsEnd := uint64(typeIdsOff) + uint64(typeIds)*4
+	if typeIDsEnd > uint64(len(raw)) {
 		return nil, fmt.Errorf("dex: type_ids table out of range (off=%#x count=%d, dex size=%d)", typeIdsOff, typeIds, len(raw))
 	}
-	if classDefsOff < 0 || classDefsOff+classDefsSize*32 > len(raw) {
+	classDefsEnd := uint64(classDefsOff) + uint64(classDefsSize)*32
+	if classDefsEnd > uint64(len(raw)) {
 		return nil, fmt.Errorf("dex: class_defs table out of range (off=%#x count=%d, dex size=%d)", classDefsOff, classDefsSize, len(raw))
 	}
 
-	out := make([]string, 0, binutil.MinInt(classDefsSize, model.MaxClassPreview))
-	for i := 0; i < classDefsSize; i++ {
-		base := classDefsOff + i*32
+	typeCount := int(typeIds)
+	typeOffset := int(typeIdsOff)
+	classOffset := int(classDefsOff)
+	classCount := int(classDefsSize)
+	out := make([]string, 0, binutil.MinInt(classCount, model.MaxClassPreview))
+	for i := 0; i < classCount; i++ {
+		base := classOffset + i*32
 		classTypeIdx := int(binutil.ReadU32(raw, base))
 		desc := fmt.Sprintf("<invalid class_idx=%d>", classTypeIdx)
-		if classTypeIdx >= 0 && classTypeIdx < typeIds {
-			typeIdxOff := typeIdsOff + classTypeIdx*4
+		if classTypeIdx >= 0 && classTypeIdx < typeCount {
+			typeIdxOff := typeOffset + classTypeIdx*4
 			stringIdx := int(binutil.ReadU32(raw, typeIdxOff))
 			if stringIdx >= 0 && stringIdx < len(strs) {
 				desc = strs[stringIdx]

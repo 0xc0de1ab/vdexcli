@@ -14,6 +14,10 @@ import (
 	"github.com/0xc0de1ab/vdexcli/internal/model"
 )
 
+// VDEX v027 defines four section kinds. Keep a small amount of headroom for
+// forward-compatible readers while rejecting inputs designed to amplify work.
+const maxVdexSectionCount uint32 = 64
+
 // ParseVdexBytes parses a VDEX file from raw bytes and returns a structured report.
 // When includeMeanings is true the report includes human-readable field descriptions.
 // This is the primary entry point and is compatible with all build targets including WASM.
@@ -50,6 +54,18 @@ func ParseVdexBytes(data []byte, includeMeanings bool) (*model.VdexReport, []byt
 		r.AddDiag(model.DiagVersionMismatch(model.VdexCurrentVersion, r.Header.Version))
 	}
 
+	if r.Header.NumSections > maxVdexSectionCount {
+		d := model.ParseDiagnostic{
+			Severity: model.SeverityError,
+			Category: model.CatSection,
+			Code:     model.DiagCode("ERR_SECTION_COUNT_LIMIT"),
+			Message:  fmt.Sprintf("section header table count %d exceeds safety limit %d", r.Header.NumSections, maxVdexSectionCount),
+			Hint:     "the VDEX v027 format normally contains four sections; verify that the file is not malformed",
+		}
+		r.AddDiag(d)
+		return r, raw, d
+	}
+
 	headerEnd64 := uint64(12) + uint64(r.Header.NumSections)*12
 	if headerEnd64 > uint64(len(raw)) {
 		d := model.DiagSectionTableTruncated(headerEnd64, len(raw))
@@ -66,7 +82,7 @@ func ParseVdexBytes(data []byte, includeMeanings bool) (*model.VdexReport, []byt
 	r.Checksums = parseChecksums(raw, sections, secIndex, r)
 
 	var dexContexts []*model.DexContext
-	if idx, ok := secIndex[model.SectionDex]; ok {
+	if idx, ok := secIndex[model.SectionDex]; ok && sections[idx].Size > 0 {
 		var dexDiags []model.ParseDiagnostic
 		dexContexts, dexDiags = dex.ParseSection(raw, sections[idx], len(r.Checksums))
 		r.AddDiags(dexDiags)

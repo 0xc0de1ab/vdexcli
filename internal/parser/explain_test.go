@@ -68,7 +68,7 @@ func TestExplainVdex_Comprehensive(t *testing.T) {
 	binary.LittleEndian.PutUint32(dexHeader[0x20:0x24], 120)        // file_size = 120 bytes (header + 8 payload)
 	binary.LittleEndian.PutUint32(dexHeader[0x24:0x28], 112)        // header_size
 	binary.LittleEndian.PutUint32(dexHeader[0x28:0x2c], 0x12345678) // endian_tag
-	binary.LittleEndian.PutUint32(dexHeader[0x60:0x64], 2)          // class_defs_size
+	binary.LittleEndian.PutUint32(dexHeader[0x60:0x64], 0)          // no class_defs table; verifier count is inferred
 
 	dexPayload := []byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11}
 	dexFile := append(dexHeader, dexPayload...) // 120 bytes
@@ -273,10 +273,20 @@ func TestExplainVdex_SectionRangeOverflow(t *testing.T) {
 
 	assert.NotPanics(t, func() {
 		pm, err := ExplainVdexBytes(raw)
-		require.NoError(t, err)
-		require.NotNil(t, pm)
-		assert.Equal(t, uint32(len(raw)), pm.TotalBytes)
+		require.Error(t, err)
+		assert.Nil(t, pm)
+		assert.Contains(t, err.Error(), "exceeds file bounds")
 	})
+}
+
+func TestExplainVdex_UnsupportedVersion(t *testing.T) {
+	raw := buildRawHeader("vdex", "999\x00", 0)
+
+	pm, err := ExplainVdexBytes(raw)
+
+	require.Error(t, err)
+	assert.Nil(t, pm)
+	assert.Contains(t, err.Error(), "unsupported VDEX version")
 }
 
 func TestAnnotatedReader_OffsetOverflowDoesNotPanic(t *testing.T) {
@@ -373,7 +383,7 @@ func buildLegacyExplainVdex(version string, numDex int) []byte {
 	// Checksums (numDex * 4 bytes)
 	for i := 0; i < numDex; i++ {
 		chk := make([]byte, 4)
-		binary.LittleEndian.PutUint32(chk, uint32(0xCAFE0000+i))
+		binary.LittleEndian.PutUint32(chk, uint32(0xCAFE0000)+uint32(i))
 		raw = append(raw, chk...)
 	}
 	return raw
@@ -1836,8 +1846,9 @@ func TestExplainVdex_Gap_OverlapSkipped(t *testing.T) {
 	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
 	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
 	pm, err := ExplainVdex(tmpFile)
-	require.NoError(t, err)
-	assert.Len(t, pm.UnmappedGaps, 0) // Should have no unmapped gaps if processed cleanly
+	require.Error(t, err)
+	assert.Nil(t, pm)
+	assert.Contains(t, err.Error(), "overlaps")
 }
 
 func TestExplainVdex_Gap_MixedZeroNonZero(t *testing.T) {
@@ -1876,8 +1887,9 @@ func TestExplainVdex_Boundary_SectionsOverlapCheckDex(t *testing.T) {
 	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
 	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
 	pm, err := ExplainVdex(tmpFile)
-	require.NoError(t, err)
-	assert.Len(t, pm.UnmappedGaps, 0)
+	require.Error(t, err)
+	assert.Nil(t, pm)
+	assert.Contains(t, err.Error(), "overlaps")
 }
 
 func TestExplainVdex_Boundary_SectionPastEOF(t *testing.T) {
@@ -1893,8 +1905,9 @@ func TestExplainVdex_Boundary_SectionPastEOF(t *testing.T) {
 	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
 	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
 	pm, err := ExplainVdex(tmpFile)
-	require.NoError(t, err)
-	assert.NotNil(t, pm)
+	require.Error(t, err)
+	assert.Nil(t, pm)
+	assert.Contains(t, err.Error(), "exceeds file bounds")
 }
 
 func TestExplainVdex_Boundary_AllSectionsEmpty(t *testing.T) {
@@ -1926,8 +1939,9 @@ func TestExplainVdex_Boundary_SameOffsetDifferentKinds(t *testing.T) {
 	tmpFile := filepath.Join(t.TempDir(), "test.vdex")
 	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
 	pm, err := ExplainVdex(tmpFile)
-	require.NoError(t, err)
-	assert.Empty(t, pm.UnmappedGaps)
+	require.Error(t, err)
+	assert.Nil(t, pm)
+	assert.Contains(t, err.Error(), "overlaps")
 }
 
 func TestExplainVdex_Boundary_HeaderOverflowU64(t *testing.T) {

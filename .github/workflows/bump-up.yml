@@ -9,16 +9,27 @@ on:
         type: string
 
 permissions:
-  actions: write
   contents: write
 
 jobs:
   bump:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+
+      - name: Verify main branch source
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Version tags must be created from the protected main branch"
+            exit 1
+          fi
+          git fetch --no-tags origin main
+          if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then
+            echo "::error::Checked-out commit does not match origin/main"
+            exit 1
+          fi
 
       - name: Validate version
         env:
@@ -41,18 +52,10 @@ jobs:
           git tag "$VERSION"
           git push origin "$VERSION"
 
-      - name: Trigger release workflow
-        id: release_dispatch
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ inputs.version }}
-        run: gh workflow run release.yml --ref "$VERSION"
-
       - name: Write workflow summary
         if: always()
         env:
           RESULT: ${{ job.status }}
-          RELEASE_DISPATCH: ${{ steps.release_dispatch.outcome }}
           VERSION: ${{ inputs.version }}
         run: |
           short_sha="${GITHUB_SHA::7}"
@@ -63,7 +66,7 @@ jobs:
             echo "| --- | --- |"
             printf '| Result | `%s` |\n' "$RESULT"
             printf '| Tag | `%s` |\n' "$VERSION"
-            printf '| Release dispatch | `%s` |\n' "$RELEASE_DISPATCH"
+            printf '| Release trigger | `tag push` |\n'
             printf '| Source ref | `%s` |\n' "$GITHUB_REF_NAME"
             printf '| Commit | [`%s`](%s/%s/commit/%s) |\n' "$short_sha" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_SHA"
             printf '| Triggered by | `%s` |\n' "$GITHUB_ACTOR"

@@ -12,12 +12,13 @@ import (
 func ParseSection(raw []byte, s model.VdexSection, expected int) ([]*model.DexContext, []model.ParseDiagnostic) {
 	var out []*model.DexContext
 	var diags []model.ParseDiagnostic
-	start := int(s.Offset)
-	end := start + int(s.Size)
-	if start < 0 || end > len(raw) || start >= end {
+	end64 := uint64(s.Offset) + uint64(s.Size)
+	if s.Size == 0 || end64 > uint64(len(raw)) {
 		diags = append(diags, model.DiagDexSectionRange())
 		return out, diags
 	}
+	start := int(s.Offset)
+	end := int(end64)
 
 	cursor := start
 	for (expected == 0 && cursor < end) || (expected > 0 && len(out) < expected) {
@@ -53,6 +54,15 @@ func ParseSection(raw []byte, s model.VdexSection, expected int) ([]*model.DexCo
 		if cursor > end {
 			break
 		}
+	}
+	if expected > 0 && len(out) == expected && cursor < end {
+		diags = append(diags, model.ParseDiagnostic{
+			Severity: model.SeverityWarning,
+			Category: model.CatDex,
+			Code:     model.WarnDexTruncated,
+			Message:  fmt.Sprintf("dex section contains %d trailing byte(s) after %d expected dex file(s)", end-cursor, expected),
+			Hint:     "checksum count and embedded DEX count may not match",
+		})
 	}
 	return out, diags
 }

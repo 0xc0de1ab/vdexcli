@@ -2,6 +2,7 @@ package dex
 
 import (
 	"encoding/binary"
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -74,8 +75,9 @@ func TestParse_BigEndianTag(t *testing.T) {
 	raw := buildMinDex(0)
 	binary.LittleEndian.PutUint32(raw[0x28:], 0x78563412) // big-endian tag
 	ctx, _, err := Parse(raw, 0)
-	require.NoError(t, err)
-	assert.Equal(t, "big-endian", ctx.Rep.Endian)
+	require.Error(t, err)
+	assert.Nil(t, ctx)
+	assert.Contains(t, err.Error(), "reverse-endian")
 }
 
 // --- ParseSection ---
@@ -223,8 +225,45 @@ func TestParse_UnknownEndianTag(t *testing.T) {
 	raw := buildMinDex(0)
 	binary.LittleEndian.PutUint32(raw[0x28:], 0x99999999) // neither LE nor BE
 	ctx, _, err := Parse(raw, 0)
-	require.NoError(t, err)
-	assert.Equal(t, "big-endian", ctx.Rep.Endian) // default fallback
+	require.Error(t, err)
+	assert.Nil(t, ctx)
+	assert.Contains(t, err.Error(), "invalid endian_tag")
+}
+
+func TestParse_UnsupportedVersion(t *testing.T) {
+	raw := buildMinDex(0)
+	copy(raw[4:8], "999\x00")
+
+	ctx, _, err := Parse(raw, 0)
+
+	require.Error(t, err)
+	assert.Nil(t, ctx)
+	assert.Contains(t, err.Error(), "unsupported version")
+}
+
+func TestParseStrings_MaxCountDoesNotOverflow(t *testing.T) {
+	_, _, err := ParseStrings(make([]byte, 16), math.MaxUint32, 0)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "out of range")
+}
+
+func TestParseClassDefs_MaxCountDoesNotOverflow(t *testing.T) {
+	_, err := ParseClassDefs(make([]byte, 112), nil, 0, 0, 0, math.MaxUint32)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "out of range")
+}
+
+func TestParseSection_WarnsAboutTrailingDexAfterExpectedCount(t *testing.T) {
+	dex0 := buildMinDex(0)
+	dex1 := buildMinDex(0)
+	raw := append(append([]byte{}, dex0...), dex1...)
+
+	ctxs, diags := ParseSection(raw, model.VdexSection{Size: uint32(len(raw))}, 1)
+
+	require.Len(t, ctxs, 1)
+	require.NotEmpty(t, diags)
+	assert.Contains(t, diags[len(diags)-1].Message, "trailing")
+	assert.Contains(t, diags[len(diags)-1].Hint, "checksum count")
 }
 
 func TestParseModifiedUtf8_Unterminated(t *testing.T) {

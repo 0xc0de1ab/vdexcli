@@ -176,7 +176,23 @@ func (e *Extractor) Extract(vdexPath string, raw []byte, dexes []model.DexReport
 		if warnMsg != "" {
 			res.Warnings = append(res.Warnings, warnMsg)
 		}
-		path := e.uniquePath(outDir, name, usedPaths)
+		if err := validateOutputName(name); err != nil {
+			res.Failed++
+			if opts.ContinueOnError {
+				res.Warnings = append(res.Warnings, fmt.Sprintf("invalid output name for dex[%d]: %v", d.Index, err))
+				continue
+			}
+			return res, fmt.Errorf("invalid output name for dex[%d]: %w", d.Index, err)
+		}
+		path, err := e.uniquePath(outDir, name, usedPaths)
+		if err != nil {
+			res.Failed++
+			if opts.ContinueOnError {
+				res.Warnings = append(res.Warnings, fmt.Sprintf("failed to select output path for dex[%d]: %v", d.Index, err))
+				continue
+			}
+			return res, err
+		}
 		if err := e.FS.WriteFile(path, raw[start:end], 0o644); err != nil {
 			if opts.ContinueOnError {
 				res.Failed++
@@ -191,16 +207,33 @@ func (e *Extractor) Extract(vdexPath string, raw []byte, dexes []model.DexReport
 	return res, nil
 }
 
-func (e *Extractor) uniquePath(baseDir, name string, used map[string]struct{}) string {
+func validateOutputName(name string) error {
+	if name == "" || name == "." || name == ".." {
+		return fmt.Errorf("name %q is not a regular filename", name)
+	}
+	if filepath.IsAbs(name) {
+		return fmt.Errorf("absolute name %q is not allowed", name)
+	}
+	if strings.ContainsAny(name, `/\`) {
+		return fmt.Errorf("name %q must not contain path separators", name)
+	}
+	return nil
+}
+
+func (e *Extractor) uniquePath(baseDir, name string, used map[string]struct{}) (string, error) {
 	stem := strings.TrimSuffix(name, filepath.Ext(name))
 	ext := filepath.Ext(name)
 	candidate := name
 	for idx := 1; ; idx++ {
 		path := filepath.Join(baseDir, candidate)
 		if _, existsUsed := used[path]; !existsUsed {
-			if _, err := e.FS.Stat(path); os.IsNotExist(err) {
+			_, err := e.FS.Stat(path)
+			if os.IsNotExist(err) {
 				used[path] = struct{}{}
-				return path
+				return path, nil
+			}
+			if err != nil {
+				return "", fmt.Errorf("stat output path %q: %w", path, err)
 			}
 		}
 		candidate = fmt.Sprintf("%s_%d%s", stem, idx, ext)

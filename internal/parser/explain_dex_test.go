@@ -122,7 +122,7 @@ func wrapInVdex(dexes ...[]byte) []byte {
 	// Checksums
 	for i := 0; i < len(dexes); i++ {
 		chk := make([]byte, 4)
-		binary.LittleEndian.PutUint32(chk, uint32(0xCAFE0000+i))
+		binary.LittleEndian.PutUint32(chk, uint32(0xCAFE0000)+uint32(i))
 		raw = append(raw, chk...)
 	}
 
@@ -175,9 +175,9 @@ func TestExplainVdex_DexTable_StringIdsOOB(t *testing.T) {
 	require.NoError(t, os.WriteFile(tmpFile, vdex, 0644))
 
 	pm, err := ExplainVdex(tmpFile)
-	require.NoError(t, err)
-	require.NotNil(t, pm)
-	// Should not panic. Parsing might just gracefully truncate or skip.
+	require.Error(t, err)
+	assert.Nil(t, pm)
+	assert.Contains(t, err.Error(), "string_ids")
 }
 
 func TestExplainVdex_StringDataUsesMUTF8ByteLength(t *testing.T) {
@@ -211,9 +211,9 @@ func TestExplainVdex_DexTable_LargeStringIdsCount(t *testing.T) {
 	require.NoError(t, os.WriteFile(tmpFile, vdex, 0644))
 
 	pm, err := ExplainVdex(tmpFile)
-	require.NoError(t, err)
-	require.NotNil(t, pm)
-	// Should truncate without panic
+	require.Error(t, err)
+	assert.Nil(t, pm)
+	assert.Contains(t, err.Error(), "string_ids")
 }
 
 func TestExplainVdex_DexTable_ProtoIdsAllFields(t *testing.T) {
@@ -661,10 +661,22 @@ func TestExplainVdexBytesRejectsNonAdvancingDexSize(t *testing.T) {
 	}()
 	select {
 	case err := <-result:
-		require.NoError(t, err)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "file_size")
 	case <-time.After(time.Second):
 		t.Fatal("DEX parser did not terminate for file_size=0")
 	}
+}
+
+func TestExplainVdexBytesRejectsUnsupportedDexVersion(t *testing.T) {
+	dex := buildMinimalDex(1, 0, 0, 0, 0, 0)
+	copy(dex[4:8], "999\x00")
+
+	previewMap, err := ExplainVdexBytes(wrapInVdex(dex))
+
+	require.Error(t, err)
+	assert.Nil(t, previewMap)
+	assert.Contains(t, err.Error(), "invalid version")
 }
 
 func TestExplainVdexBytesClampsOverflowingDexSize(t *testing.T) {
@@ -675,11 +687,27 @@ func TestExplainVdexBytesClampsOverflowingDexSize(t *testing.T) {
 	raw := wrapDexSectionWithoutChecksums(dex)
 
 	previewMap, err := ExplainVdexBytes(raw)
-	require.NoError(t, err)
-	require.Len(t, previewMap.DexPreviews, 1)
-	assert.True(t, previewMap.DexPreviews[0].Embedded)
-	for _, field := range previewMap.Fields {
-		assert.LessOrEqual(t, uint64(field.Offset)+uint64(field.Size), uint64(len(raw)))
+	require.Error(t, err)
+	assert.Nil(t, previewMap)
+	assert.Contains(t, err.Error(), "file_size")
+}
+
+func TestExplainVdexBytesRejectsUint32StringCountPromptly(t *testing.T) {
+	dex := buildMinimalDex(1, 0, 0, 0, 0, 0)
+	binary.LittleEndian.PutUint32(dex[0x38:], math.MaxUint32)
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := ExplainVdexBytes(wrapInVdex(dex))
+		result <- err
+	}()
+
+	select {
+	case err := <-result:
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "string_ids")
+	case <-time.After(time.Second):
+		t.Fatal("explain did not reject a uint32-max string_ids count promptly")
 	}
 }
 

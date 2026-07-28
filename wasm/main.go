@@ -15,9 +15,10 @@
 //	go.run(result.instance);
 //
 //	// Then use the API:
-//	const fieldMap = window.vdex.explain(uint8Array);   // returns JS object
-//	const report   = window.vdex.parse(uint8Array);     // returns JS object
-//	const version  = window.vdex.version;               // string
+//	const fieldMap = window.vdex.explain(uint8Array);          // returns JS object
+//	const structure = window.vdex.explainStructure(uint8Array); // compact web DTO
+//	const report = window.vdex.parse(uint8Array);               // returns JS object
+//	const version = window.vdex.version;                        // string
 package main
 
 import (
@@ -27,13 +28,30 @@ import (
 	"github.com/0xc0de1ab/vdexcli/pkg/vdex"
 )
 
+type structureField struct {
+	Offset      uint32         `json:"offset"`
+	Size        uint32         `json:"size"`
+	Type        vdex.FieldType `json:"type"`
+	ParsedValue any            `json:"parsed_value,omitempty"`
+	LogicalPath string         `json:"logical_path"`
+	Description string         `json:"description,omitempty"`
+}
+
+type structureMap struct {
+	Fields       []structureField `json:"fields"`
+	TotalBytes   uint32           `json:"total_bytes"`
+	UnmappedGaps []vdex.ByteRange `json:"unmapped_gaps"`
+	DexPreviews  any              `json:"dex_previews"`
+}
+
 func main() {
 	// Register the API namespace on the global object.
 	// All functions are synchronous — JavaScript callers do not need async/await.
 	js.Global().Set("vdex", js.ValueOf(map[string]any{
-		"explain": js.FuncOf(jsExplain),
-		"parse":   js.FuncOf(jsParse),
-		"version": js.ValueOf(vdex.Version()),
+		"explain":          js.FuncOf(jsExplain),
+		"explainStructure": js.FuncOf(jsExplainStructure),
+		"parse":            js.FuncOf(jsParse),
+		"version":          js.ValueOf(vdex.Version()),
 	}))
 
 	// Block forever — the WASM module must remain alive for callbacks to work.
@@ -66,6 +84,50 @@ func jsExplain(_ js.Value, args []js.Value) any {
 	}
 
 	return jsonToJSObject(fm)
+}
+
+// jsExplainStructure returns the field metadata needed by the browser tree.
+// Raw byte arrays stay in the transferred source buffer instead of being
+// expanded into JSON number arrays by the Go-to-JavaScript bridge.
+func jsExplainStructure(_ js.Value, args []js.Value) any {
+	if len(args) < 1 {
+		return jsErrorObj("explainStructure: expected Uint8Array argument")
+	}
+	data, ok := jsUint8ArrayToBytes(args[0])
+	if !ok {
+		return jsErrorObj("explainStructure: argument must be a Uint8Array")
+	}
+
+	fm, err := vdex.ExplainBytes(data)
+	if err != nil {
+		return jsErrorObj("explainStructure: " + err.Error())
+	}
+
+	fields := make([]structureField, 0, len(fm.Fields))
+	for _, field := range fm.Fields {
+		if field == nil {
+			continue
+		}
+		parsedValue := field.ParsedValue
+		if field.Type == vdex.TypeBytes || field.Type == vdex.TypePadding {
+			parsedValue = nil
+		}
+		fields = append(fields, structureField{
+			Offset:      field.Offset,
+			Size:        field.Size,
+			Type:        field.Type,
+			ParsedValue: parsedValue,
+			LogicalPath: field.LogicalPath,
+			Description: field.Description,
+		})
+	}
+
+	return jsonToJSObject(structureMap{
+		Fields:       fields,
+		TotalBytes:   fm.TotalBytes,
+		UnmappedGaps: fm.UnmappedGaps,
+		DexPreviews:  fm.DexPreviews,
+	})
 }
 
 // jsParse implements window.vdex.parse(Uint8Array) → JS Object

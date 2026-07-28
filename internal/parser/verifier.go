@@ -25,41 +25,87 @@ func ParseVerifierSection(raw []byte, s model.VdexSection, dexes []*model.DexCon
 	if expected == 0 {
 		expected = len(dexes)
 	}
+	if expected < 0 || uint64(expected)*4 > uint64(end-start) {
+		diags = append(diags, model.DiagVerifierIndexTruncated(0))
+		return out, diags
+	}
 
+	indexEnd := start + expected*4
+	blockStarts := make([]int, expected)
+	for i := range blockStarts {
+		blockStarts[i] = -1
+	}
+	previous := -1
 	for i := 0; i < expected; i++ {
 		indexOff := start + i*4
-		if indexOff+4 > end {
-			diags = append(diags, model.DiagVerifierIndexTruncated(i))
-			break
-		}
-		relative := int(binutil.ReadU32(raw, indexOff))
-		blockOff := start + relative
-		if blockOff < start || blockOff >= end {
-			diags = append(diags, model.DiagVerifierBlockOutside(i, relative))
+		relative := binutil.ReadU32(raw, indexOff)
+		blockOff64 := uint64(start) + uint64(relative)
+		if relative%4 != 0 || blockOff64 < uint64(indexEnd) || blockOff64 >= uint64(end) {
+			diags = append(diags, model.DiagVerifierBlockOutside(i, diagnosticOffset(relative)))
 			continue
 		}
-		rep, ds := parseVerifierDex(raw, start, blockOff, end, i, dexes)
+		blockOff := int(blockOff64)
+		if previous >= blockOff {
+			diags = append(diags, model.ParseDiagnostic{
+				Severity: model.SeverityWarning,
+				Category: model.CatVerifier,
+				Code:     model.WarnVerifierBlockOutside,
+				Message:  fmt.Sprintf("verifier block %d offset %#x is not strictly increasing", i, relative),
+				Hint:     "per-dex verifier blocks must be ordered and non-overlapping",
+			})
+			continue
+		}
+		blockStarts[i] = blockOff
+		previous = blockOff
+	}
+
+	for i, blockOff := range blockStarts {
+		if blockOff < 0 {
+			continue
+		}
+		blockEnd := end
+		for next := i + 1; next < len(blockStarts); next++ {
+			if blockStarts[next] > blockOff {
+				blockEnd = blockStarts[next]
+				break
+			}
+		}
+		rep, ds := parseVerifierDex(raw, start, blockOff, blockEnd, i, dexes)
 		out.Dexes = append(out.Dexes, rep)
 		diags = append(diags, ds...)
 	}
 	return out, diags
 }
 
-func parseVerifierDex(raw []byte, sectionStart int, blockStart int, sectionEnd int, dexIdx int, dexes []*model.DexContext) (model.VerifierDexReport, []model.ParseDiagnostic) {
+func diagnosticOffset(v uint32) int {
+	maxInt := uint64(^uint(0) >> 1)
+	if uint64(v) > maxInt {
+		return int(maxInt)
+	}
+	return int(v)
+}
+
+func parseVerifierDex(raw []byte, sectionStart int, blockStart int, blockEnd int, dexIdx int, dexes []*model.DexContext) (model.VerifierDexReport, []model.ParseDiagnostic) {
 	out := model.VerifierDexReport{DexIndex: dexIdx}
 	var diags []model.ParseDiagnostic
 
 	numClass := 0
 	var baseStrings []string
 	if dexIdx < len(dexes) {
-		numClass = int(dexes[dexIdx].Rep.ClassDefs)
+		classDefs := dexes[dexIdx].Rep.ClassDefs
+		maxClasses := (blockEnd-blockStart)/4 - 1
+		if maxClasses < 0 || uint64(classDefs) > uint64(maxClasses) {
+			diags = append(diags, model.DiagVerifierBlockTruncated(dexIdx))
+			return out, diags
+		}
+		numClass = int(classDefs)
 		baseStrings = dexes[dexIdx].Strings
 	}
 
 	// When DEX section is absent (DM format), class_def_count is unknown.
 	// Infer it from the verifier block's class offset table structure.
-	if numClass == 0 && blockStart < sectionEnd {
-		inferred := inferClassCount(raw, sectionStart, blockStart, sectionEnd)
+	if numClass == 0 && blockStart < blockEnd {
+		inferred := inferClassCount(raw, sectionStart, blockStart, blockEnd)
 		if inferred > 0 {
 			numClass = inferred
 			diags = append(diags, model.ParseDiagnostic{
@@ -72,7 +118,8 @@ func parseVerifierDex(raw []byte, sectionStart int, blockStart int, sectionEnd i
 		}
 	}
 
-	if blockStart+4*(numClass+1) > sectionEnd {
+	tableEnd64 := uint64(blockStart) + uint64(numClass+1)*4
+	if tableEnd64 > uint64(blockEnd) {
 		diags = append(diags, model.DiagVerifierBlockTruncated(dexIdx))
 		return out, diags
 	}
@@ -107,24 +154,28 @@ func parseVerifierDex(raw []byte, sectionStart int, blockStart int, sectionEnd i
 				return out, diags
 			}
 		}
-		setStart := sectionStart + int(o)
-		setEnd := sectionStart + int(offsets[nextValid])
-		if setStart < blockStart || setEnd > sectionEnd || setEnd < setStart {
+		setStart64 := uint64(sectionStart) + uint64(o)
+		setEnd64 := uint64(sectionStart) + uint64(offsets[nextValid])
+		if setStart64 < uint64(blockStart) ||
+			setEnd64 > uint64(blockEnd) ||
+			setEnd64 < setStart64 {
 			diags = append(diags, model.DiagVerifierMalformedBounds(dexIdx, classIdx))
 			continue
 		}
+		setStart := int(setStart64)
+		setEnd := int(setEnd64)
 		cursor := setStart
 		if cursor > maxSetEnd {
 			maxSetEnd = cursor
 		}
 		for cursor < setEnd {
-			dest, n, err := binutil.ReadULEB128(raw, cursor)
+			dest, n, err := binutil.ReadULEB128(raw[:setEnd], cursor)
 			if err != nil {
 				diags = append(diags, model.DiagVerifierInvalidLEB128(dexIdx, classIdx, "destination"))
 				break
 			}
 			cursor += n
-			src, n, err := binutil.ReadULEB128(raw, cursor)
+			src, n, err := binutil.ReadULEB128(raw[:setEnd], cursor)
 			if err != nil {
 				diags = append(diags, model.DiagVerifierInvalidLEB128(dexIdx, classIdx, "source"))
 				break
@@ -139,29 +190,38 @@ func parseVerifierDex(raw []byte, sectionStart int, blockStart int, sectionEnd i
 	}
 
 	cursor := binutil.Align4(maxSetEnd)
-	if cursor+4 > sectionEnd {
+	if cursor < maxSetEnd || cursor+4 > blockEnd {
 		out.ExtraStringCount = 0
 		return out, diags
 	}
-	numStrings := int(binutil.ReadU32(raw, cursor))
+	numStringsValue := binutil.ReadU32(raw, cursor)
 	cursor += 4
-	if cursor+numStrings*4 > sectionEnd {
+	extrasEnd64 := uint64(cursor) + uint64(numStringsValue)*4
+	if extrasEnd64 > uint64(blockEnd) {
 		diags = append(diags, model.DiagVerifierExtrasTruncated(dexIdx))
 		out.ExtraStringCount = 0
 		return out, diags
 	}
+	numStrings := int(numStringsValue)
 
 	extras := make([]string, numStrings)
+	decodedExtras := make(map[uint32]string)
 	for i := 0; i < numStrings; i++ {
 		// Extra string offsets are section-absolute.
-		rel := int(binutil.ReadU32(raw, cursor+i*4))
-		abs := sectionStart + rel
-		if abs < blockStart || abs >= sectionEnd {
-			extras[i] = fmt.Sprintf("invalid_%d", i)
-			diags = append(diags, model.DiagVerifierExtraInvalid(dexIdx, i, rel))
+		rel := binutil.ReadU32(raw, cursor+i*4)
+		if cached, ok := decodedExtras[rel]; ok {
+			extras[i] = cached
 			continue
 		}
-		extras[i] = binutil.ReadCString(raw[abs:sectionEnd])
+		abs64 := uint64(sectionStart) + uint64(rel)
+		if abs64 < uint64(blockStart) || abs64 >= uint64(blockEnd) {
+			extras[i] = fmt.Sprintf("invalid_%d", i)
+			diags = append(diags, model.DiagVerifierExtraInvalid(dexIdx, i, diagnosticOffset(rel)))
+			continue
+		}
+		abs := int(abs64)
+		extras[i] = binutil.ReadCString(raw[abs:blockEnd])
+		decodedExtras[rel] = extras[i]
 	}
 	out.ExtraStringCount = len(extras)
 

@@ -12,13 +12,14 @@ func WriteDiffText(w io.Writer, d model.VdexDiff) error {
 	out := outputWriter{dst: w}
 	if d.Summary.Identical {
 		out.printf("%s\n", c(boldGrn, "identical"))
-		out.printf("  %s (%d bytes) == %s (%d bytes)\n", d.FileA, d.SizeA, d.FileB, d.SizeB)
+		out.printf("  %s (%d bytes) == %s (%d bytes)\n",
+			terminalSafe(d.FileA), d.SizeA, terminalSafe(d.FileB), d.SizeB)
 		return out.err
 	}
 
 	out.printf("%s\n", c(bold, "VDEX diff"))
-	out.printf("  A: %s (%d bytes)\n", d.FileA, d.SizeA)
-	out.printf("  B: %s (%d bytes)\n", d.FileB, d.SizeB)
+	out.printf("  A: %s (%d bytes)\n", terminalSafe(d.FileA), d.SizeA)
+	out.printf("  B: %s (%d bytes)\n", terminalSafe(d.FileB), d.SizeB)
 	if d.SizeA != d.SizeB {
 		out.printf("  size delta: %s\n", c(yellow, fmt.Sprintf("%+d bytes", d.SizeB-d.SizeA)))
 	}
@@ -32,10 +33,10 @@ func WriteDiffText(w io.Writer, d model.VdexDiff) error {
 		out.printf("%s\n", c(bold, "header:"))
 		h := d.HeaderDiff
 		if h.MagicA != "" {
-			out.printf("  magic: %s → %s\n", c(red, h.MagicA), c(green, h.MagicB))
+			out.printf("  magic: %s → %s\n", c(red, terminalSafe(h.MagicA)), c(green, terminalSafe(h.MagicB)))
 		}
 		if h.VersionA != "" {
-			out.printf("  version: %s → %s\n", c(red, h.VersionA), c(green, h.VersionB))
+			out.printf("  version: %s → %s\n", c(red, terminalSafe(h.VersionA)), c(green, terminalSafe(h.VersionB)))
 		}
 		if h.NumSectionsA != h.NumSectionsB {
 			out.printf("  sections: %d → %d\n", h.NumSectionsA, h.NumSectionsB)
@@ -52,7 +53,7 @@ func WriteDiffText(w io.Writer, d model.VdexDiff) error {
 			} else if s.SizeDelta < 0 {
 				delta = c(red, delta)
 			}
-			out.printf("  %-28s  size %d → %d (%s)\n", s.Name, s.SizeA, s.SizeB, delta)
+			out.printf("  %-28s  size %d → %d (%s)\n", terminalSafe(s.Name), s.SizeA, s.SizeB, delta)
 		}
 		out.println()
 	}

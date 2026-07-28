@@ -155,6 +155,12 @@ func TestE2E_Parse_InvalidFormat(t *testing.T) {
 	assert.Contains(t, stderr, "unsupported --format")
 }
 
+func TestE2E_Parse_RootShorthandRejectsInvalidFormat(t *testing.T) {
+	_, stderr, code := runCLI(t, "--format", "xml", testVdexPath)
+	assert.NotEqual(t, 0, code)
+	assert.Contains(t, stderr, "unsupported --format")
+}
+
 func TestE2E_Parse_RootShorthand(t *testing.T) {
 	out, _, code := runCLI(t, "--show-meaning=false", testVdexPath)
 	assert.Equal(t, 0, code)
@@ -179,6 +185,45 @@ func TestE2E_Parse_JSONFlag(t *testing.T) {
 	var data map[string]any
 	require.NoError(t, json.Unmarshal([]byte(out), &data))
 	assert.Equal(t, "vdex", data["header"].(map[string]any)["magic"])
+}
+
+func TestE2E_Parse_StrictFailureDoesNotExtract(t *testing.T) {
+	raw, err := os.ReadFile(testVdexPath)
+	require.NoError(t, err)
+	copy(raw[4:8], "028\x00")
+	input := filepath.Join(t.TempDir(), "warning.vdex")
+	require.NoError(t, os.WriteFile(input, raw, 0o644))
+	outDir := filepath.Join(t.TempDir(), "strict-output")
+
+	_, stderr, code := runCLI(
+		t,
+		"parse",
+		"--strict",
+		"--strict-warn", "version",
+		"--extract-dex", outDir,
+		input,
+	)
+
+	assert.NotEqual(t, 0, code)
+	assert.Contains(t, stderr, "strict mode")
+	_, statErr := os.Stat(outDir)
+	assert.True(t, os.IsNotExist(statErr), "strict failure must not create extraction directory")
+}
+
+func TestE2E_ExtractDex_FatalParseDoesNotExtract(t *testing.T) {
+	raw, err := os.ReadFile(testVdexPath)
+	require.NoError(t, err)
+	copy(raw[0:4], "oops")
+	input := filepath.Join(t.TempDir(), "invalid.vdex")
+	require.NoError(t, os.WriteFile(input, raw, 0o644))
+	outDir := filepath.Join(t.TempDir(), "fatal-output")
+
+	_, stderr, code := runCLI(t, "extract-dex", input, outDir)
+
+	assert.NotEqual(t, 0, code)
+	assert.Contains(t, stderr, "invalid VDEX magic")
+	_, statErr := os.Stat(outDir)
+	assert.True(t, os.IsNotExist(statErr), "fatal parse failure must not create extraction directory")
 }
 
 // --- extract-dex ---
