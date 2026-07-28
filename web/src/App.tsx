@@ -51,8 +51,8 @@ interface PendingAnalysis {
   reject: (reason: Error) => void;
 }
 
-const MAX_BROWSER_FILE_BYTES = 128 * 1024 * 1024;
-const MAX_BROWSER_FILE_LABEL = '128 MiB';
+const MAX_BROWSER_FILE_BYTES = 16 * 1024 * 1024;
+const MAX_BROWSER_FILE_LABEL = '16 MiB';
 const SUPPORTED_VDEX_VERSION = '027';
 const ENGINE_VERSION = import.meta.env.VITE_ENGINE_VERSION ?? '';
 
@@ -105,6 +105,9 @@ const validateFileHeader = async (file: File): Promise<void> => {
   const header = new Uint8Array(await file.slice(0, 12).arrayBuffer());
   const magic = String.fromCharCode(...header.subarray(0, 4));
   if (magic !== 'vdex') {
+    if (header[0] === 0x50 && header[1] === 0x4b) {
+      throw new Error('This is a ZIP-based APK or DM file. Extract and select the contained .vdex file.');
+    }
     throw new Error('Not a VDEX file: expected the "vdex" magic signature');
   }
   let versionEnd = 8;
@@ -170,12 +173,31 @@ export default function App() {
   const processingStartedAt = useRef<number | null>(null);
   const processingRef = useRef(false);
   const operationIdRef = useRef(0);
+  const workerRecoveryAttemptedRef = useRef(false);
 
   useEffect(() => {
     const worker = new Worker(new URL('./vdex.worker.ts', import.meta.url), { type: 'classic' });
     const pendingTreeRequests = pendingTreeRef.current;
     workerRef.current = worker;
     setEngineStatus('loading');
+
+    const handleWorkerFailure = (workerError: Error) => {
+      const pending = pendingRef.current;
+      pendingRef.current = null;
+      pending?.reject(workerError);
+      for (const treePending of pendingTreeRequests.values()) treePending.reject(workerError);
+      pendingTreeRequests.clear();
+      worker.terminate();
+      if (workerRef.current === worker) workerRef.current = null;
+      if (!workerRecoveryAttemptedRef.current) {
+        workerRecoveryAttemptedRef.current = true;
+        setEngineStatus('loading');
+        setWorkerGeneration((generation) => generation + 1);
+        return;
+      }
+      setEngineStatus('error');
+      setError(workerError.message);
+    };
 
     worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
       if (workerRef.current !== worker) return;
@@ -192,6 +214,7 @@ export default function App() {
       }
       if (message.type === 'result') {
         if (pendingRef.current?.requestId === message.requestId) {
+          workerRecoveryAttemptedRef.current = false;
           const pending = pendingRef.current;
           pendingRef.current = null;
           pending.resolve({
@@ -217,39 +240,25 @@ export default function App() {
       if (message.requestId !== undefined && pending?.requestId === message.requestId) {
         pendingRef.current = null;
         pending.reject(new Error(message.message));
+        setWorkerGeneration((generation) => generation + 1);
       } else if (message.requestId !== undefined && pendingTreeRequests.has(message.requestId)) {
         const treePending = pendingTreeRequests.get(message.requestId);
         pendingTreeRequests.delete(message.requestId);
         treePending?.reject(new Error(message.message));
       } else if (message.requestId === undefined) {
-        setEngineStatus('error');
-        setError(message.message);
+        handleWorkerFailure(new Error(message.message));
       }
     };
 
     worker.onerror = (event) => {
       if (workerRef.current !== worker) return;
       event.preventDefault();
-      const workerError = new Error(event.message || 'WASM worker failed');
-      const pending = pendingRef.current;
-      pendingRef.current = null;
-      pending?.reject(workerError);
-      for (const treePending of pendingTreeRequests.values()) treePending.reject(workerError);
-      pendingTreeRequests.clear();
-      setEngineStatus('error');
-      setError(workerError.message);
+      handleWorkerFailure(new Error(event.message || 'WASM worker failed'));
     };
 
     worker.onmessageerror = () => {
       if (workerRef.current !== worker) return;
-      const workerError = new Error('WASM worker returned an unreadable message');
-      const pending = pendingRef.current;
-      pendingRef.current = null;
-      pending?.reject(workerError);
-      for (const treePending of pendingTreeRequests.values()) treePending.reject(workerError);
-      pendingTreeRequests.clear();
-      setEngineStatus('error');
-      setError(workerError.message);
+      handleWorkerFailure(new Error('WASM worker returned an unreadable message'));
     };
 
     const initMessage: WorkerRequest = {
@@ -396,6 +405,7 @@ export default function App() {
 
     workerRef.current?.terminate();
     workerRef.current = null;
+    workerRecoveryAttemptedRef.current = false;
     analysisIdRef.current = null;
     setIsProcessing(false);
     setProgress(null);
@@ -422,11 +432,10 @@ export default function App() {
   };
 
   const reset = () => {
-    const activeAnalysisId = analysisIdRef.current;
-    if (activeAnalysisId !== null) {
-      const disposeMessage: WorkerRequest = { type: 'dispose', analysisId: activeAnalysisId };
-      workerRef.current?.postMessage(disposeMessage);
-    }
+    operationIdRef.current += 1;
+    workerRef.current?.terminate();
+    workerRef.current = null;
+    workerRecoveryAttemptedRef.current = false;
     setData(null);
     setSourceBytes(null);
     setError(null);
@@ -440,6 +449,8 @@ export default function App() {
       pending.reject(new Error('The VDEX analysis was closed'));
     }
     pendingTreeRef.current.clear();
+    setEngineStatus('loading');
+    setWorkerGeneration((generation) => generation + 1);
   };
 
   const requestTreeData = useCallback((message: WorkerRequest): Promise<TreeWorkerResponse> => {

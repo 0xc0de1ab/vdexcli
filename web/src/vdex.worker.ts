@@ -100,6 +100,7 @@ interface GoRuntime {
 
 interface VdexApi {
   explainStructure: (data: Uint8Array) => unknown;
+  explainStructureJSON: (data: Uint8Array) => unknown;
 }
 
 interface WorkerScope {
@@ -147,6 +148,7 @@ interface BuildNode {
   declared_size?: number;
   preview_offset?: number;
   preview_span?: number;
+  parent?: BuildNode;
 }
 
 interface SectionDeclaration {
@@ -155,10 +157,16 @@ interface SectionDeclaration {
 }
 
 const ARRAY_CHUNK_SIZE = 256;
+const MAX_TREE_NODES = 500_000;
 const scope = globalThis as unknown as WorkerScope;
 let engineReady: Promise<void> | null = null;
 let nextNodeId = 1;
-let activeAnalysis: { requestId: number; root: BuildNode; nodes: Map<number, BuildNode> } | null = null;
+let activeAnalysis: {
+  requestId: number;
+  root: BuildNode;
+  nodes: Map<number, BuildNode>;
+  offsetLeaves: BuildNode[];
+} | null = null;
 
 const messageFromError = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
@@ -166,12 +174,12 @@ const messageFromError = (error: unknown): string =>
 const waitForApi = async () => {
   for (
     let attempt = 0;
-    attempt < 100 && typeof scope.vdex?.explainStructure !== 'function';
+    attempt < 100 && typeof scope.vdex?.explainStructureJSON !== 'function';
     attempt += 1
   ) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  if (typeof scope.vdex?.explainStructure !== 'function') {
+  if (typeof scope.vdex?.explainStructureJSON !== 'function') {
     throw new Error('VDEX WASM structure API was not registered');
   }
 };
@@ -228,14 +236,21 @@ const initialize = async (baseUrl: string, engineVersion: string) => {
   );
 };
 
-const newBuildNode = (key: string, index?: number): BuildNode => ({
-  id: nextNodeId++,
-  key,
-  index,
-  terminals: [],
-  childMap: new Map(),
-  children: [],
-});
+const newBuildNode = (key: string, index?: number): BuildNode => {
+  if (nextNodeId > MAX_TREE_NODES) {
+    throw new Error(
+      `Browser analysis tree limit exceeded: more than ${MAX_TREE_NODES.toLocaleString()} nodes; use the CLI for this VDEX.`,
+    );
+  }
+  return {
+    id: nextNodeId++,
+    key,
+    index,
+    terminals: [],
+    childMap: new Map(),
+    children: [],
+  };
+};
 
 const tokenizePath = (path: string): PathToken[] => {
   const tokens: PathToken[] = [];
@@ -467,6 +482,7 @@ const makeRangeNode = (children: BuildNode[], nodes: Map<number, BuildNode>): Bu
   const finish = children.at(-1)?.index ?? start;
   const node = newBuildNode(`[${start}..${finish}]`);
   aggregateNode(node, 'range', children);
+  for (const child of children) child.parent = node;
   node.item_count = children.length;
   node.description = `${children.length.toLocaleString()} array items with indices ${start.toLocaleString()} through ${finish.toLocaleString()}.`;
   delete node.terminals;
@@ -497,6 +513,7 @@ const finishNode = (
   }
 
   let children = node.children.map((child) => finishNode(child, nodes, false, node.key));
+  for (const child of children) child.parent = node;
   const indexedChildren = children
     .filter((child) => child.index !== undefined)
     .sort((left, right) => (left.index ?? 0) - (right.index ?? 0));
@@ -510,6 +527,7 @@ const finishNode = (
     }
     children = [...ranges, ...metadataChildren];
   }
+  for (const child of children) child.parent = node;
 
   const kind: StructureNodeKind = isRoot
     ? 'root'
@@ -642,7 +660,11 @@ const buildStructureAnalysis = (parsedResult: Record<string, unknown>, fields: R
     if (child.key === 'header' || child.key === 'sections') initialChildren.push(serializeChildren(child));
   }
 
-  return { root, nodes, result: {
+  const offsetLeaves = [...nodes.values()]
+    .filter((node) => node.kind === 'field' || node.kind === 'gap')
+    .sort((left, right) => (left.offset ?? 0) - (right.offset ?? 0));
+
+  return { root, nodes, offsetLeaves, result: {
     total_bytes: totalBytes,
     field_count: fields.length,
     root: serializeNode(root),
@@ -651,19 +673,29 @@ const buildStructureAnalysis = (parsedResult: Record<string, unknown>, fields: R
   } };
 };
 
-const nodeContainsOffset = (node: BuildNode, offset: number): boolean => {
-  const rangeOffset = node.declared_offset ?? node.offset ?? 0;
-  const rangeSize = node.declared_size ?? node.span ?? 0;
-  return rangeSize > 0 && offset >= rangeOffset && offset < rangeOffset + rangeSize;
-};
-
-const findOffsetPath = (node: BuildNode, offset: number): BuildNode[] | null => {
-  if (!nodeContainsOffset(node, offset)) return null;
-  for (const child of node.children) {
-    const path = findOffsetPath(child, offset);
-    if (path) return [node, ...path];
+const findIndexedOffsetPath = (leaves: BuildNode[], offset: number): BuildNode[] => {
+  let low = 0;
+  let high = leaves.length - 1;
+  while (low <= high) {
+    const middle = low + Math.floor((high - low) / 2);
+    const leaf = leaves[middle];
+    const start = leaf.offset ?? 0;
+    const end = start + (leaf.span ?? 0);
+    if (offset < start) {
+      high = middle - 1;
+    } else if (offset >= end) {
+      low = middle + 1;
+    } else {
+      const path: BuildNode[] = [];
+      let cursor: BuildNode | undefined = leaf;
+      while (cursor) {
+        path.unshift(cursor);
+        cursor = cursor.parent;
+      }
+      return path;
+    }
   }
-  return node.children.length === 0 || node.declared_size !== undefined ? [node] : null;
+  return [];
 };
 
 const requireActiveAnalysis = (analysisId: number) => {
@@ -688,7 +720,7 @@ const sendChildren = (message: Extract<WorkerRequest, { type: 'children' }>) => 
 
 const sendOffsetPath = (message: Extract<WorkerRequest, { type: 'find-offset' }>) => {
   const analysis = requireActiveAnalysis(message.analysisId);
-  const path = findOffsetPath(analysis.root, message.offset) ?? [];
+  const path = findIndexedOffsetPath(analysis.offsetLeaves, message.offset);
   scope.postMessage({
     type: 'offset-path',
     requestId: message.requestId,
@@ -712,7 +744,7 @@ const analyze = async (requestId: number, buffer: ArrayBuffer) => {
   });
 
   const startedAt = performance.now();
-  const result = scope.vdex.explainStructure(new Uint8Array(buffer));
+  const result = scope.vdex.explainStructureJSON(new Uint8Array(buffer));
   const parsedResult = typeof result === 'string' ? JSON.parse(result) as unknown : result;
   const analysisMs = performance.now() - startedAt;
   const fields =
@@ -744,7 +776,12 @@ const analyze = async (requestId: number, buffer: ArrayBuffer) => {
 
   const treeStartedAt = performance.now();
   const structure = buildStructureAnalysis(parsedResult as Record<string, unknown>, fields);
-  activeAnalysis = { requestId, root: structure.root, nodes: structure.nodes };
+  activeAnalysis = {
+    requestId,
+    root: structure.root,
+    nodes: structure.nodes,
+    offsetLeaves: structure.offsetLeaves,
+  };
   const treeMs = performance.now() - treeStartedAt;
   scope.postMessage({
     type: 'result',

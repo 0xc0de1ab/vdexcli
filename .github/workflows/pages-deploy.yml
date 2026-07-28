@@ -21,17 +21,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  deploy:
-    permissions:
-      contents: read
-      pages: write
-      id-token: write
+  build:
     outputs:
-      page_url: ${{ steps.deployment.outputs.page_url }}
       wasm_smoke: ${{ steps.wasm-smoke.outcome }}
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -74,13 +66,26 @@ jobs:
         working-directory: ./web
         run: npm run build
 
-      - name: Setup Pages
-        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6
-
       - name: Upload artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
         with:
           path: './web/dist'
+
+  deploy:
+    needs: build
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    outputs:
+      page_url: ${{ steps.deployment.outputs.page_url }}
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup Pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6
 
       - name: Deploy to GitHub Pages
         id: deployment
@@ -89,12 +94,13 @@ jobs:
   summary:
     name: "summary"
     if: always()
-    needs: deploy
+    needs: [build, deploy]
     runs-on: ubuntu-latest
     env:
+      BUILD_RESULT: ${{ needs.build.result }}
       DEPLOY_RESULT: ${{ needs.deploy.result }}
       PAGE_URL: ${{ needs.deploy.outputs.page_url }}
-      WASM_SMOKE: ${{ needs.deploy.outputs.wasm_smoke }}
+      WASM_SMOKE: ${{ needs.build.outputs.wasm_smoke }}
     steps:
       - name: Write workflow summary
         run: |
@@ -105,7 +111,8 @@ jobs:
             echo
             echo "| Item | Value |"
             echo "| --- | --- |"
-            printf '| Result | `%s` |\n' "$DEPLOY_RESULT"
+            printf '| Build | `%s` |\n' "$BUILD_RESULT"
+            printf '| Deploy | `%s` |\n' "$DEPLOY_RESULT"
             printf '| Node.js | `24` |\n'
             printf '| Go version | `go.mod` |\n'
             printf '| WASM bridge | `%s` |\n' "${WASM_SMOKE:-unavailable}"
