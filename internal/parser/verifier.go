@@ -205,23 +205,38 @@ func parseVerifierDex(raw []byte, sectionStart int, blockStart int, blockEnd int
 	numStrings := int(numStringsValue)
 
 	extras := make([]string, numStrings)
-	decodedExtras := make(map[uint32]string)
+	relativeOffsets := make([]uint32, numStrings)
+	absoluteOffsets := make([]int, numStrings)
 	for i := 0; i < numStrings; i++ {
 		// Extra string offsets are section-absolute.
 		rel := binutil.ReadU32(raw, cursor+i*4)
-		if cached, ok := decodedExtras[rel]; ok {
-			extras[i] = cached
-			continue
-		}
+		relativeOffsets[i] = rel
 		abs64 := uint64(sectionStart) + uint64(rel)
-		if abs64 < uint64(blockStart) || abs64 >= uint64(blockEnd) {
-			extras[i] = fmt.Sprintf("invalid_%d", i)
-			diags = append(diags, model.DiagVerifierExtraInvalid(dexIdx, i, diagnosticOffset(rel)))
+		if abs64 > uint64(^uint(0)>>1) {
+			absoluteOffsets[i] = -1
+		} else {
+			absoluteOffsets[i] = int(abs64)
+		}
+	}
+	decodedExtras, failures := binutil.DecodeCStringOffsets(
+		raw,
+		absoluteOffsets,
+		int(extrasEnd64),
+		blockEnd,
+	)
+	for i, abs := range absoluteOffsets {
+		if value, ok := decodedExtras[abs]; ok {
+			extras[i] = value
 			continue
 		}
-		abs := int(abs64)
-		extras[i] = binutil.ReadCString(raw[abs:blockEnd])
-		decodedExtras[rel] = extras[i]
+		extras[i] = fmt.Sprintf("invalid_%d", i)
+		if _, failed := failures[abs]; failed {
+			diags = append(diags, model.DiagVerifierExtraInvalid(
+				dexIdx,
+				i,
+				diagnosticOffset(relativeOffsets[i]),
+			))
+		}
 	}
 	out.ExtraStringCount = len(extras)
 
@@ -296,12 +311,14 @@ func inferClassCount(raw []byte, sectionStart int, blockStart int, sectionEnd in
 }
 
 func resolveVerifierString(dexStrings []string, extras []string, extraBase uint32, id uint32) string {
-	if int(id) < len(dexStrings) {
-		return dexStrings[id]
+	if uint64(id) < uint64(len(dexStrings)) {
+		return dexStrings[int(id)]
 	}
-	rel := int(id - extraBase)
-	if id >= extraBase && rel >= 0 && rel < len(extras) {
-		return extras[rel]
+	if id >= extraBase {
+		rel := uint64(id - extraBase)
+		if rel < uint64(len(extras)) {
+			return extras[int(rel)]
+		}
 	}
 	return fmt.Sprintf("string_%d", id)
 }

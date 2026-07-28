@@ -671,3 +671,9 @@ func TestParseVerifierDex_DMInfer_ThenBlockTruncated(t *testing.T) {
 	// Should either infer small count or hit truncation
 	_ = diags // no crash is the main assertion
 }
+
+func TestResolveVerifierString_MaxUint32(t *testing.T) {
+	got := resolveVerifierString([]string{"base"}, []string{"extra"}, 1, ^uint32(0))
+
+	assert.Equal(t, "string_4294967295", got)
+}

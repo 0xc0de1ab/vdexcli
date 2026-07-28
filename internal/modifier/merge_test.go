@@ -272,6 +272,32 @@ func TestParseVerifierDexForMerge_MalformedBounds(t *testing.T) {
 	assert.Contains(t, warnings[0], "malformed")
 }
 
+func TestParseVerifierDexForMerge_RejectsULEBOutsideClassSet(t *testing.T) {
+	tests := []struct {
+		name     string
+		setByte  byte
+		contains string
+	}{
+		{name: "destination", setByte: 0x80, contains: "destination"},
+		{name: "source", setByte: 0x01, contains: "source"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			section := make([]byte, 20)
+			binary.LittleEndian.PutUint32(section[0:], 8)
+			binary.LittleEndian.PutUint32(section[4:], 9)
+			section[8] = tt.setByte
+
+			_, warnings, err := ParseVerifierDexForMerge(section, 0, 0, len(section), 0, 1)
+
+			require.Error(t, err)
+			require.NotEmpty(t, warnings)
+			assert.Contains(t, warnings[len(warnings)-1], tt.contains)
+		})
+	}
+}
+
 func TestBuildVerifierSectionMerge_ExtraStringsAppended(t *testing.T) {
 	classCount := 1
 	section := buildSimpleVerifierSection(classCount)

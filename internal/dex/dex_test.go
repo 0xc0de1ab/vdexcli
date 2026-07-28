@@ -141,6 +141,32 @@ func TestParseStrings_Valid(t *testing.T) {
 	assert.Equal(t, "hello", m[8])
 }
 
+func TestParseStrings_RejectsOverlappingStringData(t *testing.T) {
+	raw := make([]byte, 20)
+	binary.LittleEndian.PutUint32(raw[0:], 8)
+	binary.LittleEndian.PutUint32(raw[4:], 10)
+	raw[8] = 1
+	copy(raw[9:], "ABCDE\x00")
+
+	_, _, err := ParseStrings(raw, 2, 0)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unterminated")
+}
+
+func TestParseStrings_AllowsDuplicateOffsets(t *testing.T) {
+	raw := make([]byte, 20)
+	binary.LittleEndian.PutUint32(raw[0:], 8)
+	binary.LittleEndian.PutUint32(raw[4:], 8)
+	raw[8] = 2
+	copy(raw[9:], "ok\x00")
+
+	strs, _, err := ParseStrings(raw, 2, 0)
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"ok", "ok"}, strs)
+}
+
 // --- ParseClassDefs ---
 
 func TestParseClassDefs_Zero(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math/bits"
+	"sort"
 )
 
 func ReadU32(raw []byte, off int) uint32 {
@@ -51,6 +52,54 @@ func ReadCString(raw []byte) string {
 		return string(raw)
 	}
 	return string(raw[:n])
+}
+
+// DecodeCStringOffsets decodes unique NUL-terminated strings without allowing
+// one entry to scan or copy through the start of the next entry.
+func DecodeCStringOffsets(raw []byte, offsets []int, minOffset, endOffset int) (map[int]string, map[int]error) {
+	decoded := make(map[int]string, len(offsets))
+	failures := make(map[int]error)
+	if minOffset < 0 || endOffset < minOffset || endOffset > len(raw) {
+		err := fmt.Errorf("invalid C-string table bounds [%#x,%#x)", minOffset, endOffset)
+		for _, off := range offsets {
+			failures[off] = err
+		}
+		return decoded, failures
+	}
+
+	unique := append([]int(nil), offsets...)
+	sort.Ints(unique)
+	write := 0
+	for _, off := range unique {
+		if write > 0 && off == unique[write-1] {
+			continue
+		}
+		unique[write] = off
+		write++
+	}
+	unique = unique[:write]
+
+	for i, off := range unique {
+		if off < minOffset || off >= endOffset {
+			failures[off] = fmt.Errorf("C-string offset %#x outside [%#x,%#x)", off, minOffset, endOffset)
+			continue
+		}
+		limit := endOffset
+		if i+1 < len(unique) && unique[i+1] < limit {
+			limit = unique[i+1]
+		}
+		if limit <= off {
+			failures[off] = fmt.Errorf("C-string offset %#x has no available data", off)
+			continue
+		}
+		n := bytes.IndexByte(raw[off:limit], 0)
+		if n < 0 {
+			failures[off] = fmt.Errorf("C-string at %#x overlaps the next entry or is unterminated", off)
+			continue
+		}
+		decoded[off] = string(raw[off : off+n])
+	}
+	return decoded, failures
 }
 
 func AppendUint32LE(out []byte, v uint32) []byte {
