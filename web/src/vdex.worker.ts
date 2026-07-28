@@ -111,13 +111,18 @@ interface WorkerScope {
   postMessage: (message: WorkerResponse, transfer?: Transferable[]) => void;
 }
 
-interface RawField {
-  offset: number;
-  size: number;
-  type: string;
-  parsed_value?: unknown;
-  logical_path: string;
-  description?: string;
+interface RawFields {
+  offset: number[];
+  size: number[];
+  type: number[];
+  value: unknown[];
+  path: string[];
+  description: number[];
+}
+
+interface FieldDictionaries {
+  types: string[];
+  descriptions: string[];
 }
 
 interface PathToken {
@@ -129,7 +134,7 @@ interface BuildNode {
   id: number;
   key: string;
   index?: number;
-  terminals?: RawField[];
+  terminals?: number[];
   childMap?: Map<string, BuildNode>;
   children: BuildNode[];
   kind?: StructureNodeKind;
@@ -272,7 +277,7 @@ const tokenizePath = (path: string): PathToken[] => {
   return structureTokens;
 };
 
-const addField = (root: BuildNode, field: RawField, logicalPath = field.logical_path) => {
+const addField = (root: BuildNode, fields: RawFields, fieldIndex: number, logicalPath = fields.path[fieldIndex]) => {
   const tokens = tokenizePath(logicalPath);
   if (tokens.length === 0) tokens.push({ key: 'field' });
 
@@ -287,15 +292,17 @@ const addField = (root: BuildNode, field: RawField, logicalPath = field.logical_
     }
     node = child;
   }
-  node.terminals?.push(field);
+  node.terminals?.push(fieldIndex);
 };
 
-const compactValue = (field: RawField): unknown => {
-  if (field.type === 'bytes' || field.type === 'padding' || Array.isArray(field.parsed_value)) {
-    if (field.type === 'padding') return `${field.size.toLocaleString()} padding bytes`;
-    return `${field.size.toLocaleString()} raw bytes`;
+const compactValue = (fields: RawFields, fieldIndex: number, fieldType: string): unknown => {
+  const size = fields.size[fieldIndex];
+  const parsedValue = fields.value[fieldIndex];
+  if (fieldType === 'bytes' || fieldType === 'padding' || Array.isArray(parsedValue)) {
+    if (fieldType === 'padding') return `${size.toLocaleString()} padding bytes`;
+    return `${size.toLocaleString()} raw bytes`;
   }
-  return field.parsed_value;
+  return parsedValue;
 };
 
 const semanticDescription = (key: string, parentKey?: string): string | undefined => {
@@ -328,21 +335,37 @@ const semanticDescription = (key: string, parentKey?: string): string | undefine
   return descriptions[key];
 };
 
-const finishLeaf = (node: BuildNode, field: RawField, nodes: Map<number, BuildNode>) => {
-  const isGap = field.type === 'padding' && field.description?.toLowerCase().includes('unmapped');
+const finishLeaf = (
+  node: BuildNode,
+  fields: RawFields,
+  fieldIndex: number,
+  nodes: Map<number, BuildNode>,
+  dictionaries: FieldDictionaries,
+) => {
+  const typeIndex = fields.type[fieldIndex];
+  const descriptionIndex = fields.description[fieldIndex];
+  const fieldType = dictionaries.types[typeIndex];
+  if (fieldType === undefined) throw new Error(`Unknown compact field type ${typeIndex}`);
+  const description = dictionaries.descriptions[descriptionIndex];
+  if (description === undefined) {
+    throw new Error(`Unknown compact field description ${descriptionIndex}`);
+  }
+  const offset = fields.offset[fieldIndex];
+  const size = fields.size[fieldIndex];
+  const isGap = fieldType === 'padding' && description.toLowerCase().includes('unmapped');
   node.kind = isGap ? 'gap' : 'field';
-  node.offset = field.offset;
-  node.span = field.size;
-  node.covered_bytes = field.size;
+  node.offset = offset;
+  node.span = size;
+  node.covered_bytes = size;
   node.contiguous = true;
   node.field_count = 1;
-  node.type = field.type;
-  node.value = compactValue(field);
-  node.description = field.description;
-  node.preview_offset = field.offset;
-  node.preview_span = field.size;
-  delete node.terminals;
-  delete node.childMap;
+  node.type = fieldType;
+  node.value = compactValue(fields, fieldIndex, fieldType);
+  node.description = description || undefined;
+  node.preview_offset = offset;
+  node.preview_span = size;
+  node.terminals = undefined;
+  node.childMap = undefined;
   nodes.set(node.id, node);
 };
 
@@ -485,21 +508,23 @@ const makeRangeNode = (children: BuildNode[], nodes: Map<number, BuildNode>): Bu
   for (const child of children) child.parent = node;
   node.item_count = children.length;
   node.description = `${children.length.toLocaleString()} array items with indices ${start.toLocaleString()} through ${finish.toLocaleString()}.`;
-  delete node.terminals;
-  delete node.childMap;
+  node.terminals = undefined;
+  node.childMap = undefined;
   nodes.set(node.id, node);
   return node;
 };
 
 const finishNode = (
   node: BuildNode,
+  fields: RawFields,
   nodes: Map<number, BuildNode>,
+  dictionaries: FieldDictionaries,
   isRoot = false,
   parentKey?: string,
 ): BuildNode => {
   const terminals = node.terminals ?? [];
   if (terminals.length === 1 && node.children.length === 0) {
-    finishLeaf(node, terminals[0], nodes);
+    finishLeaf(node, fields, terminals[0], nodes, dictionaries);
     return node;
   }
 
@@ -512,7 +537,9 @@ const finishNode = (
     }
   }
 
-  let children = node.children.map((child) => finishNode(child, nodes, false, node.key));
+  let children = node.children.map(
+    (child) => finishNode(child, fields, nodes, dictionaries, false, node.key),
+  );
   for (const child of children) child.parent = node;
   const indexedChildren = children
     .filter((child) => child.index !== undefined)
@@ -552,21 +579,22 @@ const finishNode = (
     node.value = sectionItemValue(children);
   }
 
-  delete node.terminals;
-  delete node.childMap;
+  node.terminals = undefined;
+  node.childMap = undefined;
   nodes.set(node.id, node);
   return node;
 };
 
-const readSectionDeclarations = (fields: RawField[]) => {
+const readSectionDeclarations = (fields: RawFields) => {
   const sections = new Map<number, { kind?: number; offset?: number; size?: number }>();
   const pattern = /^vdex\.sections\[(\d+)\]\.(kind|offset|size)$/;
-  for (const field of fields) {
-    const match = pattern.exec(field.logical_path);
-    if (!match || typeof field.parsed_value !== 'number') continue;
+  for (let fieldIndex = 0; fieldIndex < fields.path.length; fieldIndex += 1) {
+    const match = pattern.exec(fields.path[fieldIndex]);
+    const parsedValue = fields.value[fieldIndex];
+    if (!match || typeof parsedValue !== 'number') continue;
     const index = Number(match[1]);
     const record = sections.get(index) ?? {};
-    record[match[2] as 'kind' | 'offset' | 'size'] = field.parsed_value;
+    record[match[2] as 'kind' | 'offset' | 'size'] = parsedValue;
     sections.set(index, record);
   }
 
@@ -598,18 +626,25 @@ const ensureSectionNodes = (root: BuildNode, declarations: Map<number, SectionDe
   }
 };
 
-const sectionOwnedPath = (field: RawField, declarations: Map<number, SectionDeclaration>): string => {
-  if (field.logical_path !== 'vdex.padding' || field.size === 0) return field.logical_path;
-  const fieldEnd = field.offset + field.size;
+const sectionOwnedPath = (
+  fields: RawFields,
+  fieldIndex: number,
+  declarations: Map<number, SectionDeclaration>,
+): string => {
+  const logicalPath = fields.path[fieldIndex];
+  const fieldOffset = fields.offset[fieldIndex];
+  const fieldSize = fields.size[fieldIndex];
+  if (logicalPath !== 'vdex.padding' || fieldSize === 0) return logicalPath;
+  const fieldEnd = fieldOffset + fieldSize;
   for (const [kind, declaration] of declarations) {
     const offset = declaration.offset;
     const size = declaration.size;
     if (offset === undefined || size === undefined || size === 0) continue;
-    if (field.offset >= offset && fieldEnd <= offset + size) {
+    if (fieldOffset >= offset && fieldEnd <= offset + size) {
       return `vdex.${sectionKey(kind)}.padding`;
     }
   }
-  return field.logical_path;
+  return logicalPath;
 };
 
 const serializeNode = (node: BuildNode): StructureNode => ({
@@ -640,14 +675,39 @@ const serializeChildren = (node: BuildNode): StructureChildren => ({
   children: node.children.map(serializeNode),
 });
 
-const buildStructureAnalysis = (parsedResult: Record<string, unknown>, fields: RawField[]) => {
+const buildStructureAnalysis = (parsedResult: Record<string, unknown>, fields: RawFields) => {
   nextNodeId = 1;
   const mutableRoot = newBuildNode('vdex');
   const declarations = readSectionDeclarations(fields);
-  for (const field of fields) addField(mutableRoot, field, sectionOwnedPath(field, declarations));
+  for (let fieldIndex = 0; fieldIndex < fields.path.length; fieldIndex += 1) {
+    addField(
+      mutableRoot,
+      fields,
+      fieldIndex,
+      sectionOwnedPath(fields, fieldIndex, declarations),
+    );
+  }
   ensureSectionNodes(mutableRoot, declarations);
   const nodes = new Map<number, BuildNode>();
-  const root = finishNode(mutableRoot, nodes, true);
+  const dictionaries = {
+    types: parsedResult.field_types,
+    descriptions: parsedResult.field_descriptions,
+  };
+  if (
+    !Array.isArray(dictionaries.types) ||
+    dictionaries.types.some((value) => typeof value !== 'string') ||
+    !Array.isArray(dictionaries.descriptions) ||
+    dictionaries.descriptions.some((value) => typeof value !== 'string')
+  ) {
+    throw new Error('Invalid compact field dictionaries');
+  }
+  const root = finishNode(
+    mutableRoot,
+    fields,
+    nodes,
+    dictionaries as FieldDictionaries,
+    true,
+  );
   attachDexPreviews(root, readDexPreviews(parsedResult.dex_previews));
   const totalBytes = typeof parsedResult.total_bytes === 'number' ? parsedResult.total_bytes : 0;
   root.offset = 0;
@@ -666,7 +726,7 @@ const buildStructureAnalysis = (parsedResult: Record<string, unknown>, fields: R
 
   return { root, nodes, offsetLeaves, result: {
     total_bytes: totalBytes,
-    field_count: fields.length,
+    field_count: fields.path.length,
     root: serializeNode(root),
     initial_children: initialChildren,
     unmapped_gaps: parsedResult.unmapped_gaps ?? [],
@@ -749,11 +809,25 @@ const analyze = async (requestId: number, buffer: ArrayBuffer) => {
   const analysisMs = performance.now() - startedAt;
   const fields =
     typeof parsedResult === 'object' && parsedResult !== null &&
-    Array.isArray((parsedResult as { fields?: unknown }).fields)
-      ? (parsedResult as { fields: RawField[] }).fields
+    (parsedResult as { field_encoding?: unknown }).field_encoding === 'columnar-v1' &&
+    typeof (parsedResult as { fields?: unknown }).fields === 'object' &&
+    (parsedResult as { fields?: unknown }).fields !== null
+      ? (parsedResult as { fields: RawFields }).fields
       : null;
 
-  if (!fields) {
+  const fieldCount = fields && Array.isArray(fields.path) ? fields.path.length : -1;
+  if (
+    !fields ||
+    fieldCount < 0 ||
+    !Array.isArray(fields.offset) ||
+    !Array.isArray(fields.size) ||
+    !Array.isArray(fields.type) ||
+    !Array.isArray(fields.value) ||
+    !Array.isArray(fields.path) ||
+    !Array.isArray(fields.description) ||
+    [fields.offset, fields.size, fields.type, fields.value, fields.description]
+      .some((column) => column.length !== fieldCount)
+  ) {
     scope.postMessage({
       type: 'result',
       requestId,
@@ -770,7 +844,7 @@ const analyze = async (requestId: number, buffer: ArrayBuffer) => {
     requestId,
     stage: 'preparing',
     label: 'Building semantic byte tree',
-    detail: `Grouping ${fields.length.toLocaleString()} fields into headers and arrays`,
+    detail: `Grouping ${fieldCount.toLocaleString()} fields into headers and arrays`,
     percent: 92,
   });
 

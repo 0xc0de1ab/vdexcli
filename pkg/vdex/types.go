@@ -40,12 +40,14 @@ type Diagnostic = model.ParseDiagnostic
 // Primitive type constants for use in field type comparisons.
 const (
 	TypeMagic    = model.TypeMagic
+	TypeChar     = model.TypeChar
 	TypeUint8    = model.TypeUint8
 	TypeUint16LE = model.TypeUint16LE
 	TypeUint32LE = model.TypeUint32LE
 	TypeUint64LE = model.TypeUint64LE
 	TypeUleb128  = model.TypeUleb128
 	TypeLeb128   = model.TypeLeb128
+	TypeString   = model.TypeString
 	TypeCString  = model.TypeCString
 	TypeBytes    = model.TypeBytes
 	TypePadding  = model.TypePadding
