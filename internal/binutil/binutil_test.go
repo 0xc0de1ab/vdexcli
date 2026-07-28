@@ -104,6 +104,24 @@ func TestReadCString_EmptyString(t *testing.T) {
 	assert.Equal(t, "", ReadCString([]byte{0x00, 0x41}))
 }
 
+func TestDecodeCStringOffsets(t *testing.T) {
+	raw := []byte("xxfirst\x00second\x00")
+	decoded, failures := DecodeCStringOffsets(raw, []int{8, 2, 2}, 2, len(raw))
+
+	assert.Empty(t, failures)
+	assert.Equal(t, "first", decoded[2])
+	assert.Equal(t, "second", decoded[8])
+}
+
+func TestDecodeCStringOffsets_RejectsOverlap(t *testing.T) {
+	raw := []byte("xxabcdef\x00")
+	decoded, failures := DecodeCStringOffsets(raw, []int{2, 5}, 2, len(raw))
+
+	assert.NotContains(t, decoded, 2)
+	require.Error(t, failures[2])
+	assert.Equal(t, "def", decoded[5])
+}
+
 // --- AppendUint32LE ---
 
 func TestAppendUint32LE(t *testing.T) {

@@ -253,12 +253,12 @@ func ParseVerifierDexForMerge(raw []byte, sectionStart int, blockStart int, sect
 		}
 		cursor := setStart
 		for cursor < setEnd {
-			dest, n, err := binutil.ReadULEB128(raw, cursor)
+			dest, n, err := binutil.ReadULEB128(raw[:setEnd], cursor)
 			if err != nil {
 				return out, append(warnings, fmt.Sprintf("dex %d class %d invalid destination leb128", dexIdx, classIdx)), err
 			}
 			cursor += n
-			src, n, err := binutil.ReadULEB128(raw, cursor)
+			src, n, err := binutil.ReadULEB128(raw[:setEnd], cursor)
 			if err != nil {
 				return out, append(warnings, fmt.Sprintf("dex %d class %d invalid source leb128", dexIdx, classIdx)), err
 			}
@@ -278,15 +278,29 @@ func ParseVerifierDexForMerge(raw []byte, sectionStart int, blockStart int, sect
 		return out, warnings, nil
 	}
 	extras := make([]string, numStrings)
+	absoluteOffsets := make([]int, numStrings)
+	relativeOffsets := make([]uint32, numStrings)
 	for i := 0; i < numStrings; i++ {
-		rel := int(binutil.ReadU32(raw, cursor+i*4))
-		abs := sectionStart + rel
-		if abs < blockStart || abs >= sectionEnd {
-			extras[i] = fmt.Sprintf("invalid_%d", i)
-			warnings = append(warnings, fmt.Sprintf("dex %d extra string %d offset %#x invalid", dexIdx, i, rel))
+		rel := binutil.ReadU32(raw, cursor+i*4)
+		relativeOffsets[i] = rel
+		abs64 := uint64(sectionStart) + uint64(rel)
+		if abs64 > uint64(^uint(0)>>1) {
+			absoluteOffsets[i] = -1
+		} else {
+			absoluteOffsets[i] = int(abs64)
+		}
+	}
+	extrasStart := cursor + numStrings*4
+	decoded, failures := binutil.DecodeCStringOffsets(raw, absoluteOffsets, extrasStart, sectionEnd)
+	for i, abs := range absoluteOffsets {
+		if value, ok := decoded[abs]; ok {
+			extras[i] = value
 			continue
 		}
-		extras[i] = binutil.ReadCString(raw[abs:sectionEnd])
+		if _, failed := failures[abs]; failed {
+			extras[i] = fmt.Sprintf("invalid_%d", i)
+			warnings = append(warnings, fmt.Sprintf("dex %d extra string %d offset %#x invalid", dexIdx, i, relativeOffsets[i]))
+		}
 	}
 	out.ExtraString = extras
 	return out, warnings, nil
