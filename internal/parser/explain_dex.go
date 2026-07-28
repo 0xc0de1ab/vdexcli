@@ -38,27 +38,29 @@ type dexSectionInfo struct {
 // dexPayloadParams holds all parameters needed to annotate one DEX file's
 // internal payload sections.
 type dexPayloadParams struct {
-	raw           []byte
-	r             *AnnotatedReader
-	dexIdx        int
-	dexStart      uint32 // absolute file offset where this DEX begins
-	effectiveSize uint32 // byte length of this DEX (may be < declared file_size if truncated)
-	headerSize    uint32 // from header_size field; usually 112
-	stringIdsOff  uint32
-	stringIdsSize uint32
-	typeIdsOff    uint32
-	typeIdsSize   uint32
-	protoIdsOff   uint32
-	protoIdsSize  uint32
-	fieldIdsOff   uint32
-	fieldIdsSize  uint32
-	methodIdsOff  uint32
-	methodIdsSize uint32
-	classDefsOff  uint32
-	classDefsSize uint32
-	linkOff       uint32
-	linkSize      uint32
-	mapOff        uint32
+	raw             []byte
+	r               *AnnotatedReader
+	dexIdx          int
+	dexStart        uint32 // absolute file offset used as the base for DEX offsets
+	effectiveSize   uint32 // size of the addressable DEX/container range
+	headerSize      uint32 // from header_size field; 112 or 120
+	payloadStart    uint32 // container-relative byte after this DEX header
+	sharedContainer bool   // v041 offsets may reference data beyond the next header
+	stringIdsOff    uint32
+	stringIdsSize   uint32
+	typeIdsOff      uint32
+	typeIdsSize     uint32
+	protoIdsOff     uint32
+	protoIdsSize    uint32
+	fieldIdsOff     uint32
+	fieldIdsSize    uint32
+	methodIdsOff    uint32
+	methodIdsSize   uint32
+	classDefsOff    uint32
+	classDefsSize   uint32
+	linkOff         uint32
+	linkSize        uint32
+	mapOff          uint32
 }
 
 func buildDexPreview(p dexPayloadParams) model.DexPreview {
@@ -209,6 +211,10 @@ func annotateMapList(r *AnnotatedReader, raw []byte, secName string, secOff, sec
 	r.SetOffset(secOff)
 	mapCount := r.ReadUint32LE(secName+".size", "Map list count",
 		"Number of map_item entries in this map_list.")
+	readableCount := min(uint64(mapCount), uint64(secSize-4)/12)
+	if !r.ensureFieldCapacity(readableCount*4, secName+" entries") {
+		return
+	}
 
 	mapTypeName := map[uint16]string{
 		0x0000: "TYPE_HEADER_ITEM", 0x0001: "TYPE_STRING_ID_ITEM",
@@ -255,6 +261,9 @@ func annotateMapList(r *AnnotatedReader, raw []byte, secName string, secOff, sec
 // annotateStringIds reads string_ids table and resolves inline string values.
 func annotateStringIds(r *AnnotatedReader, raw []byte, secName string, secSize, dexStart, dexEnd, stringIdsSize uint32) {
 	count := secSize / 4
+	if !r.ensureFieldCapacity(uint64(count), secName) {
+		return
+	}
 	resolvedByOffset := make(map[uint32]string, min(int(count), 4096))
 	for j := uint32(0); j < count; j++ {
 		strDataOff := r.ReadUint32LE(
@@ -302,6 +311,9 @@ func annotateStringIds(r *AnnotatedReader, raw []byte, secName string, secSize, 
 // annotateClassDefs reads class_defs table with access_flags bit decomposition.
 func annotateClassDefs(r *AnnotatedReader, secName string, secSize uint32) {
 	count := secSize / 32
+	if !r.ensureFieldCapacity(uint64(count)*8, secName) {
+		return
+	}
 	for j := uint32(0); j < count; j++ {
 		prefix := fmt.Sprintf("%s[%d]", secName, j)
 		r.ReadUint32LE(prefix+".class_idx", "ClassDef class_idx",
@@ -548,13 +560,16 @@ func annotateDexPayload(p dexPayloadParams) {
 	// -------------------------------------------------------------------------
 	// 2. Walk sections in order, filling gaps, annotating each table.
 	// -------------------------------------------------------------------------
-	payloadCursor := headerSize
+	payloadCursor := p.payloadStart
+	if payloadCursor == 0 {
+		payloadCursor = headerSize
+	}
 	for _, sec := range dedup {
 		if sec.off < payloadCursor {
 			continue
 		}
 		// Gap before this section
-		if sec.off > payloadCursor {
+		if sec.off > payloadCursor && !p.sharedContainer {
 			gapSize := sec.off - payloadCursor
 			gapAbs := dexStart + payloadCursor
 			if gapAbs+gapSize <= dexEnd {
@@ -637,7 +652,7 @@ func annotateDexPayload(p dexPayloadParams) {
 	// -------------------------------------------------------------------------
 	// 3. Handle remaining bytes (data section): string_data_items + rest.
 	// -------------------------------------------------------------------------
-	if payloadCursor < effectiveSize {
+	if payloadCursor < effectiveSize && !p.sharedContainer {
 		annotateStringDataItems(
 			r, raw, dexIdx,
 			dexStart, dexEnd, payloadCursor, effectiveSize,

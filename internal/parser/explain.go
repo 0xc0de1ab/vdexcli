@@ -11,7 +11,10 @@ import (
 	"github.com/0xc0de1ab/vdexcli/internal/model"
 )
 
-const maxExplainSections = 64
+const (
+	maxExplainSections = 64
+	maxExplainFields   = 250_000
+)
 
 // accessFlagsDescription returns a human-readable description of DEX class access_flags.
 // See https://source.android.com/docs/core/runtime/dex-format#access-flags
@@ -71,9 +74,10 @@ func accessFlagsDescription(flags uint32) string {
 }
 
 type AnnotatedReader struct {
-	data   []byte
-	offset uint32
-	fields []*model.PrimitiveField
+	data       []byte
+	offset     uint32
+	fields     []*model.PrimitiveField
+	fieldError error
 }
 
 func (r *AnnotatedReader) canRead(size uint32) bool {
@@ -82,6 +86,35 @@ func (r *AnnotatedReader) canRead(size uint32) bool {
 
 func NewAnnotatedReader(data []byte) *AnnotatedReader {
 	return &AnnotatedReader{data: data, offset: 0}
+}
+
+func (r *AnnotatedReader) ensureFieldCapacity(additional uint64, context string) bool {
+	if r.fieldError != nil {
+		return false
+	}
+	projected := uint64(len(r.fields)) + additional
+	if projected <= maxExplainFields {
+		return true
+	}
+	r.fieldError = fmt.Errorf(
+		"analysis field limit exceeded while decoding %s: %d > %d; use `vdexcli parse` for bounded summary output",
+		context,
+		projected,
+		maxExplainFields,
+	)
+	return false
+}
+
+func (r *AnnotatedReader) addField(field *model.PrimitiveField) bool {
+	if !r.ensureFieldCapacity(1, field.LogicalPath) {
+		return false
+	}
+	r.fields = append(r.fields, field)
+	return true
+}
+
+func (r *AnnotatedReader) FieldError() error {
+	return r.fieldError
 }
 
 func (r *AnnotatedReader) SetOffset(off uint32) {
@@ -102,7 +135,7 @@ func (r *AnnotatedReader) ReadMagic(size int, path string, summary string, desc 
 	}
 	end := r.offset + uint32(size)
 	val := string(r.data[r.offset:end])
-	r.fields = append(r.fields, &model.PrimitiveField{
+	r.addField(&model.PrimitiveField{
 		Offset:      r.offset,
 		Size:        uint32(size),
 		Type:        model.TypeMagic,
@@ -121,7 +154,7 @@ func (r *AnnotatedReader) ReadUint8(path string, summary string, desc string) ui
 		return 0
 	}
 	val := r.data[r.offset]
-	r.fields = append(r.fields, &model.PrimitiveField{
+	r.addField(&model.PrimitiveField{
 		Offset:      r.offset,
 		Size:        1,
 		Type:        model.TypeUint8,
@@ -140,7 +173,7 @@ func (r *AnnotatedReader) ReadUint16LE(path string, summary string, desc string)
 		return 0
 	}
 	val := binary.LittleEndian.Uint16(r.data[r.offset : r.offset+2])
-	r.fields = append(r.fields, &model.PrimitiveField{
+	r.addField(&model.PrimitiveField{
 		Offset:      r.offset,
 		Size:        2,
 		Type:        model.TypeUint16LE,
@@ -159,7 +192,7 @@ func (r *AnnotatedReader) ReadUint32LE(path string, summary string, desc string)
 		return 0
 	}
 	val := binary.LittleEndian.Uint32(r.data[r.offset : r.offset+4])
-	r.fields = append(r.fields, &model.PrimitiveField{
+	r.addField(&model.PrimitiveField{
 		Offset:      r.offset,
 		Size:        4,
 		Type:        model.TypeUint32LE,
@@ -178,7 +211,7 @@ func (r *AnnotatedReader) ReadUint64LE(path string, summary string, desc string)
 		return 0
 	}
 	val := binary.LittleEndian.Uint64(r.data[r.offset : r.offset+8])
-	r.fields = append(r.fields, &model.PrimitiveField{
+	r.addField(&model.PrimitiveField{
 		Offset:      r.offset,
 		Size:        8,
 		Type:        model.TypeUint64LE,
@@ -201,7 +234,7 @@ func (r *AnnotatedReader) ReadUleb128(path string, summary string, desc string) 
 		// Do NOT advance r.offset on error; caller must check bytesRead==0 and break.
 		return 0, 0
 	}
-	r.fields = append(r.fields, &model.PrimitiveField{
+	r.addField(&model.PrimitiveField{
 		Offset:      r.offset,
 		Size:        uint32(bytesRead),
 		Type:        model.TypeUleb128,
@@ -239,7 +272,7 @@ func (r *AnnotatedReader) ReadCStringBounded(maxOffset uint32, path string, summ
 		size = uint32(nullIdx) + 1
 		val = string(r.data[r.offset : r.offset+uint32(nullIdx)])
 	}
-	r.fields = append(r.fields, &model.PrimitiveField{
+	r.addField(&model.PrimitiveField{
 		Offset:      r.offset,
 		Size:        size,
 		Type:        model.TypeCString,
@@ -266,7 +299,7 @@ func (r *AnnotatedReader) ReadBytes(size int, path string, summary string, desc 
 	}
 	end := r.offset + uint32(size)
 	val := r.data[r.offset:end]
-	r.fields = append(r.fields, &model.PrimitiveField{
+	r.addField(&model.PrimitiveField{
 		Offset:      r.offset,
 		Size:        uint32(size),
 		Type:        model.TypeBytes,
@@ -288,7 +321,7 @@ func (r *AnnotatedReader) Align4(path string) {
 	newOffset := uint32(aligned)
 	padSize := newOffset - r.offset
 	if padSize > 0 && newOffset <= uint32(len(r.data)) {
-		r.fields = append(r.fields, &model.PrimitiveField{
+		r.addField(&model.PrimitiveField{
 			Offset:      r.offset,
 			Size:        padSize,
 			Type:        model.TypePadding,
@@ -353,6 +386,9 @@ func validateExplainSections(fileSize int, headerEnd uint64, sections []sectionI
 
 func validateExplainDexTable(name string, offset, count, itemSize, dexSize uint32) error {
 	if count == 0 {
+		if offset != 0 {
+			return fmt.Errorf("DEX %s has zero count with non-zero offset %#x", name, offset)
+		}
 		return nil
 	}
 	if count > maxExplainCollectionItems {
@@ -462,6 +498,9 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 			return nil, fmt.Errorf("VDEX checksum count %d exceeds explain limit %d", count, maxExplainCollectionItems)
 		}
 		checksumsCount = int(count)
+		if !r.ensureFieldCapacity(uint64(count), "VDEX checksums") {
+			return nil, r.FieldError()
+		}
 		for i := uint32(0); i < count; i++ {
 			checksum := r.ReadUint32LE(
 				fmt.Sprintf("vdex.checksums[%d]", i),
@@ -473,7 +512,7 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 		// BUG-M4 fix: emit TypePadding for remainder bytes when size % 4 != 0.
 		remainder := cs.size % 4
 		if remainder != 0 {
-			r.fields = append(r.fields, &model.PrimitiveField{
+			r.addField(&model.PrimitiveField{
 				Offset:      r.offset,
 				Size:        remainder,
 				Type:        model.TypePadding,
@@ -520,6 +559,7 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 			if !validDexVersion(dexVersion) {
 				return nil, fmt.Errorf("dex[%d] at %#x has invalid version %q", dexIdx, dexStart, dexVersion)
 			}
+			isContainerDex := strings.TrimRight(dexVersion, "\x00") == "041"
 
 			_ = r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.checksum", dexIdx), "DEX checksum", "Adler32 checksum of the DEX file.")
 			_ = r.ReadBytes(20, fmt.Sprintf("vdex.dex[%d].header.signature", dexIdx), "DEX SHA-1 signature", "SHA-1 signature of the DEX file (20 bytes).")
@@ -543,26 +583,101 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 			classDefsOff := r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.class_defs_off", dexIdx), "DEX class defs offset", "Offset from start of the file to the class definitions list.")
 			_ = r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.data_size", dexIdx), "DEX data size", "Size of the data section in bytes.")
 			_ = r.ReadUint32LE(fmt.Sprintf("vdex.dex[%d].header.data_off", dexIdx), "DEX data offset", "Offset from start of the file to the data section.")
-
-			if fileSize < 112 {
-				return nil, fmt.Errorf("dex[%d] at %#x has invalid file_size %#x", dexIdx, dexStart, fileSize)
-			}
-			available := sectionEnd - uint64(dexStart)
-			if uint64(fileSize) > available {
+			if typeIdsSize > model.MaxTypeLookupClasses {
 				return nil, fmt.Errorf(
-					"dex[%d] at %#x declares file_size %#x with only %#x bytes available",
-					dexIdx, dexStart, fileSize, available,
+					"dex[%d] at %#x: type_ids count %d exceeds format limit %d",
+					dexIdx,
+					dexStart,
+					typeIdsSize,
+					model.MaxTypeLookupClasses,
 				)
 			}
-			effectiveSize := fileSize
-			dexDefs = append(dexDefs, classDefsSize)
-
-			if headerSize != 112 {
+			if protoIdsSize > model.MaxTypeLookupClasses {
+				return nil, fmt.Errorf(
+					"dex[%d] at %#x: proto_ids count %d exceeds format limit %d",
+					dexIdx,
+					dexStart,
+					protoIdsSize,
+					model.MaxTypeLookupClasses,
+				)
+			}
+			if fieldIdsSize > model.MaxTypeLookupClasses || methodIdsSize > model.MaxTypeLookupClasses {
+				return nil, fmt.Errorf(
+					"dex[%d] at %#x: field_ids/method_ids counts %d/%d exceed format limit %d",
+					dexIdx,
+					dexStart,
+					fieldIdsSize,
+					methodIdsSize,
+					model.MaxTypeLookupClasses,
+				)
+			}
+			expectedHeaderSize := uint32(112)
+			if isContainerDex {
+				expectedHeaderSize = 120
+			}
+			if fileSize < expectedHeaderSize {
+				return nil, fmt.Errorf("dex[%d] at %#x has invalid file_size %#x", dexIdx, dexStart, fileSize)
+			}
+			if headerSize != expectedHeaderSize {
 				return nil, fmt.Errorf("dex[%d] at %#x has unsupported header_size %#x", dexIdx, dexStart, headerSize)
 			}
 			if endianTag != 0x12345678 {
 				return nil, fmt.Errorf("dex[%d] at %#x has unsupported endian tag %#x", dexIdx, dexStart, endianTag)
 			}
+
+			offsetBase := dexStart
+			addressSize := fileSize
+			payloadStart := headerSize
+			headerOffset := uint32(0)
+			if isContainerDex {
+				if uint64(r.Offset())+8 > sectionEnd {
+					return nil, fmt.Errorf("dex[%d] at %#x has truncated v041 container fields", dexIdx, dexStart)
+				}
+				containerSize := r.ReadUint32LE(
+					fmt.Sprintf("vdex.dex[%d].header.container_size", dexIdx),
+					"DEX container size",
+					"Total size of the shared DEX v041 container.",
+				)
+				headerOffset = r.ReadUint32LE(
+					fmt.Sprintf("vdex.dex[%d].header.header_offset", dexIdx),
+					"DEX header offset",
+					"Offset of this DEX header from the start of the shared container.",
+				)
+				expectedOffset := dexStart - ds.offset
+				if headerOffset != expectedOffset {
+					return nil, fmt.Errorf(
+						"dex[%d] at %#x declares header_offset %#x, expected %#x",
+						dexIdx,
+						dexStart,
+						headerOffset,
+						expectedOffset,
+					)
+				}
+				if containerSize != ds.size || headerOffset >= containerSize ||
+					uint64(fileSize) > uint64(containerSize)-uint64(headerOffset) {
+					return nil, fmt.Errorf(
+						"dex[%d] at %#x has invalid container_size %#x, header_offset %#x, file_size %#x",
+						dexIdx,
+						dexStart,
+						containerSize,
+						headerOffset,
+						fileSize,
+					)
+				}
+				offsetBase = ds.offset
+				addressSize = containerSize
+				payloadStart = headerOffset + headerSize
+			} else {
+				available := sectionEnd - uint64(dexStart)
+				if uint64(fileSize) > available {
+					return nil, fmt.Errorf(
+						"dex[%d] at %#x declares file_size %#x with only %#x bytes available",
+						dexIdx, dexStart, fileSize, available,
+					)
+				}
+			}
+			dexDefs = append(dexDefs, classDefsSize)
+
 			for _, table := range []struct {
 				name                string
 				offset, count, size uint32
@@ -574,46 +689,68 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 				{"method_ids", methodIdsOff, methodIdsSize, 8},
 				{"class_defs", classDefsOff, classDefsSize, 32},
 			} {
-				if err := validateExplainDexTable(table.name, table.offset, table.count, table.size, effectiveSize); err != nil {
+				if err := validateExplainDexTable(table.name, table.offset, table.count, table.size, addressSize); err != nil {
 					return nil, fmt.Errorf("dex[%d] at %#x: %w", dexIdx, dexStart, err)
 				}
+				if table.count > 0 && table.offset < payloadStart {
+					return nil, fmt.Errorf(
+						"dex[%d] at %#x: DEX %s offset %#x precedes payload start %#x",
+						dexIdx,
+						dexStart,
+						table.name,
+						table.offset,
+						payloadStart,
+					)
+				}
+			}
+			dexTableFields :=
+				uint64(stringIdsSize) +
+					uint64(typeIdsSize) +
+					uint64(protoIdsSize)*3 +
+					uint64(fieldIdsSize)*3 +
+					uint64(methodIdsSize)*3 +
+					uint64(classDefsSize)*8
+			if !r.ensureFieldCapacity(dexTableFields, fmt.Sprintf("DEX[%d] identifier tables", dexIdx)) {
+				return nil, r.FieldError()
 			}
 			if linkSize > 0 {
-				if linkOff == 0 || uint64(linkOff)+uint64(linkSize) > uint64(effectiveSize) {
+				if linkOff < payloadStart || uint64(linkOff)+uint64(linkSize) > uint64(addressSize) {
 					return nil, fmt.Errorf(
 						"dex[%d] at %#x has invalid link range offset=%#x size=%#x",
 						dexIdx, dexStart, linkOff, linkSize,
 					)
 				}
 			}
-			if mapOff > 0 && uint64(mapOff)+4 > uint64(effectiveSize) {
+			if mapOff > 0 && (mapOff < payloadStart || uint64(mapOff)+4 > uint64(addressSize)) {
 				return nil, fmt.Errorf("dex[%d] at %#x has invalid map_off %#x", dexIdx, dexStart, mapOff)
 			}
 
 			// Delegate DEX payload annotation and semantic preview extraction to
 			// explain_dex.go so the byte map and interpreter use the same bounds.
 			params := dexPayloadParams{
-				raw:           raw,
-				r:             r,
-				dexIdx:        dexIdx,
-				dexStart:      dexStart,
-				effectiveSize: effectiveSize,
-				headerSize:    headerSize,
-				stringIdsOff:  stringIdsOff,
-				stringIdsSize: stringIdsSize,
-				typeIdsOff:    typeIdsOff,
-				typeIdsSize:   typeIdsSize,
-				protoIdsOff:   protoIdsOff,
-				protoIdsSize:  protoIdsSize,
-				fieldIdsOff:   fieldIdsOff,
-				fieldIdsSize:  fieldIdsSize,
-				methodIdsOff:  methodIdsOff,
-				methodIdsSize: methodIdsSize,
-				classDefsOff:  classDefsOff,
-				classDefsSize: classDefsSize,
-				linkOff:       linkOff,
-				linkSize:      linkSize,
-				mapOff:        mapOff,
+				raw:             raw,
+				r:               r,
+				dexIdx:          dexIdx,
+				dexStart:        offsetBase,
+				effectiveSize:   addressSize,
+				headerSize:      headerSize,
+				payloadStart:    payloadStart,
+				sharedContainer: isContainerDex,
+				stringIdsOff:    stringIdsOff,
+				stringIdsSize:   stringIdsSize,
+				typeIdsOff:      typeIdsOff,
+				typeIdsSize:     typeIdsSize,
+				protoIdsOff:     protoIdsOff,
+				protoIdsSize:    protoIdsSize,
+				fieldIdsOff:     fieldIdsOff,
+				fieldIdsSize:    fieldIdsSize,
+				methodIdsOff:    methodIdsOff,
+				methodIdsSize:   methodIdsSize,
+				classDefsOff:    classDefsOff,
+				classDefsSize:   classDefsSize,
+				linkOff:         linkOff,
+				linkSize:        linkSize,
+				mapOff:          mapOff,
 			}
 			preview := buildDexPreview(params)
 			if dexIdx < len(checksumValues) {
@@ -626,8 +763,11 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 				dexPreviews = append(dexPreviews, preview)
 			}
 			annotateDexPayload(params)
+			if err := r.FieldError(); err != nil {
+				return nil, err
+			}
 
-			nextCursor := uint64(dexStart) + uint64(effectiveSize)
+			nextCursor := uint64(dexStart) + uint64(fileSize)
 			if nextCursor <= uint64(cursor) || nextCursor > sectionEnd {
 				break
 			}
@@ -661,6 +801,9 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 		}
 
 		var dexBlockOffsets []uint32
+		if !r.ensureFieldCapacity(uint64(expectedDexCount), "verifier DEX offset table") {
+			return nil, r.FieldError()
+		}
 		for i := 0; i < expectedDexCount; i++ {
 			off := r.ReadUint32LE(
 				fmt.Sprintf("vdex.verifier.dex_offsets[%d]", i),
@@ -719,6 +862,9 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 			r.SetOffset(uint32(blockOff))
 
 			var classOffsets []uint32
+			if !r.ensureFieldCapacity(uint64(numClass+1), fmt.Sprintf("verifier DEX[%d] class offsets", i)) {
+				return nil, r.FieldError()
+			}
 			for c := 0; c <= numClass; c++ {
 				off := r.ReadUint32LE(
 					fmt.Sprintf("vdex.verifier.dex[%d].class_offsets[%d]", i, c),
@@ -759,6 +905,9 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 				r.SetOffset(uint32(setStart))
 				pairIdx := 0
 				for r.Offset() < uint32(setEnd) {
+					if !r.ensureFieldCapacity(2, fmt.Sprintf("verifier DEX[%d] assignability pairs", i)) {
+						return nil, r.FieldError()
+					}
 					if _, _, err := binutil.ReadULEB128(raw[:setEnd], int(r.Offset())); err != nil {
 						return nil, fmt.Errorf(
 							"verifier dex[%d] class[%d] pair[%d] destination exceeds set bounds",
@@ -825,6 +974,12 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 				}
 
 				var extraStringOffsets []uint32
+				if !r.ensureFieldCapacity(
+					uint64(numStrings)*2,
+					fmt.Sprintf("verifier DEX[%d] extra strings", i),
+				) {
+					return nil, r.FieldError()
+				}
 				for s := uint32(0); s < numStrings; s++ {
 					off := r.ReadUint32LE(
 						fmt.Sprintf("vdex.verifier.dex[%d].extra_string_offsets[%d]", i, s),
@@ -897,6 +1052,9 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 					"type-lookup dex[%d] entry count %d exceeds explain limit %d",
 					i, count, maxExplainCollectionItems,
 				)
+			}
+			if !r.ensureFieldCapacity(uint64(count)*2, fmt.Sprintf("type-lookup DEX[%d] entries", i)) {
+				return nil, r.FieldError()
 			}
 
 			// I-04 fix: Compute maskBits from class_defs_size of the corresponding DEX.
@@ -982,6 +1140,9 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 			}
 		}
 	}
+	if err := r.FieldError(); err != nil {
+		return nil, err
+	}
 
 	// Sweep and fill unmapped gaps to ensure 0 gaps and match total file length.
 	sort.Slice(r.fields, func(i, j int) bool {
@@ -1035,7 +1196,6 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 			cursor = f.Offset + f.Size
 		}
 	}
-
 	if cursor < fileSize {
 		gapBytes := raw[cursor:fileSize]
 		gapSize := fileSize - cursor
@@ -1057,6 +1217,13 @@ func ExplainVdexBytes(data []byte) (*model.PrimitiveMap, error) {
 			Summary:     "Trailing Padding",
 			Description: desc,
 		})
+	}
+	if len(finalFields) > maxExplainFields {
+		return nil, fmt.Errorf(
+			"analysis field limit exceeded while filling byte coverage: %d > %d; use `vdexcli parse` for bounded summary output",
+			len(finalFields),
+			maxExplainFields,
+		)
 	}
 
 	// BUG-N3: Removed the redundant second sort.Slice. After the BUG-H1 overlap fix

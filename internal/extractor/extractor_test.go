@@ -33,15 +33,17 @@ func (m *mockFileWriter) MkdirAll(path string, _ os.FileMode) error {
 }
 
 func (m *mockFileWriter) WriteFile(name string, data []byte, _ os.FileMode) error {
+	if err, ok := m.statErr[name]; ok {
+		if err == nil {
+			return os.ErrExist
+		}
+		return err
+	}
+	if _, exists := m.files[name]; exists {
+		return os.ErrExist
+	}
 	m.files[name] = append([]byte{}, data...)
 	return nil
-}
-
-func (m *mockFileWriter) Stat(name string) (os.FileInfo, error) {
-	if err, ok := m.statErr[name]; ok {
-		return nil, err
-	}
-	return nil, os.ErrNotExist
 }
 
 // --- Mock NameRenderer ---
@@ -81,6 +83,41 @@ func TestExtractor_BasicExtraction(t *testing.T) {
 	assert.Len(t, fs.files, 2)
 	assert.Equal(t, raw[100:120], fs.files["/out/app.vdex_0_0.dex"])
 	assert.Equal(t, raw[200:220], fs.files["/out/app.vdex_1_0.dex"])
+}
+
+func TestExtractor_Dex041WritesPhysicalContainerOnce(t *testing.T) {
+	raw := make([]byte, 512)
+	for i := range raw[100:400] {
+		raw[100+i] = byte(i)
+	}
+	dexes := []model.DexReport{
+		{Index: 0, Offset: 100, Size: 160, Version: "041", ContainerSize: 300, HeaderOffset: 0},
+		{Index: 1, Offset: 260, Size: 140, Version: "041", ContainerSize: 300, HeaderOffset: 160},
+	}
+	fs := newMockFS()
+	ext := &Extractor{FS: fs, Renderer: &TemplateRenderer{}}
+
+	res, err := ext.Extract("app.vdex", raw, dexes, "/out", Options{})
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, res.Extracted)
+	assert.Zero(t, res.Failed)
+	require.Len(t, fs.files, 1)
+	assert.Equal(t, raw[100:400], fs.files["/out/app.vdex_0_0.dex"])
+}
+
+func TestExtractor_Dex041RejectsInvalidContainerMetadata(t *testing.T) {
+	dexes := []model.DexReport{
+		{Index: 0, Offset: 100, Size: 160, Version: "041", ContainerSize: 200, HeaderOffset: 80},
+	}
+	fs := newMockFS()
+	ext := &Extractor{FS: fs, Renderer: &TemplateRenderer{}}
+
+	res, err := ext.Extract("app.vdex", make([]byte, 512), dexes, "/out", Options{})
+
+	require.Error(t, err)
+	assert.Equal(t, 1, res.Failed)
+	assert.Empty(t, fs.files)
 }
 
 func TestExtractor_InvalidRange_StopsOnError(t *testing.T) {
@@ -246,7 +283,6 @@ type failMkdirFS struct{}
 
 func (failMkdirFS) MkdirAll(_ string, _ os.FileMode) error            { return fmt.Errorf("mkdir failed") }
 func (failMkdirFS) WriteFile(_ string, _ []byte, _ os.FileMode) error { return nil }
-func (failMkdirFS) Stat(_ string) (os.FileInfo, error)                { return nil, os.ErrNotExist }
 
 func TestExtractor_RendererError_Stops(t *testing.T) {
 	fs := newMockFS()
@@ -304,7 +340,6 @@ func (failWriteFS) MkdirAll(_ string, _ os.FileMode) error { return nil }
 func (failWriteFS) WriteFile(_ string, _ []byte, _ os.FileMode) error {
 	return fmt.Errorf("write failed")
 }
-func (failWriteFS) Stat(_ string) (os.FileInfo, error) { return nil, os.ErrNotExist }
 
 func TestExtractor_UniquePathCollision(t *testing.T) {
 	// First path already exists on FS → should append _1
@@ -317,6 +352,22 @@ func TestExtractor_UniquePathCollision(t *testing.T) {
 	assert.Equal(t, 1, res.Extracted)
 	// Should have written to _1 variant
 	assert.Contains(t, fs.files, "/out/app.vdex_0_0_1.dex")
+}
+
+func TestOSFileWriter_DoesNotFollowExistingSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := dir + "/target"
+	link := dir + "/output.dex"
+	require.NoError(t, os.WriteFile(target, []byte("original"), 0o600))
+	require.NoError(t, os.Symlink(target, link))
+
+	err := (OSFileWriter{}).WriteFile(link, []byte("replacement"), 0o644)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, os.ErrExist)
+	content, readErr := os.ReadFile(target)
+	require.NoError(t, readErr)
+	assert.Equal(t, []byte("original"), content)
 }
 
 func TestExtract_NilReport(t *testing.T) {

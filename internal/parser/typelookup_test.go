@@ -260,7 +260,7 @@ func TestParseTypeLookupDex_DenseTableAllocationsStayLinear(t *testing.T) {
 		binary.LittleEndian.PutUint32(entries[i*8:], 1)
 	}
 	dex := &model.DexContext{
-		Rep:                model.DexReport{ClassDefs: 2},
+		Rep:                model.DexReport{ClassDefs: buckets},
 		StringOffsetToName: map[uint32]string{1: "Lx;"},
 	}
 
@@ -271,4 +271,25 @@ func TestParseTypeLookupDex_DenseTableAllocationsStayLinear(t *testing.T) {
 	})
 
 	assert.Less(t, allocs, float64(100), "chain analysis must not allocate once per bucket")
+}
+
+func TestParseTypeLookupDex_RejectsOversizedPayloadBeforeAllocation(t *testing.T) {
+	raw := make([]byte, maxTypeLookupRawSize+8)
+
+	report := parseTypeLookupDex(raw, nil)
+
+	assert.Zero(t, report.BucketCount)
+	assert.Zero(t, report.EntryCount)
+	require.NotEmpty(t, report.Warnings)
+	assert.Contains(t, report.Warnings[0], "exceeds maximum")
+}
+
+func TestParseTypeLookupDex_RejectsUnexpectedSize(t *testing.T) {
+	report := parseTypeLookupDex(make([]byte, 16), &model.DexContext{
+		Rep: model.DexReport{ClassDefs: 4},
+	})
+
+	assert.Zero(t, report.BucketCount)
+	require.NotEmpty(t, report.Warnings)
+	assert.Contains(t, report.Warnings[0], "does not match")
 }

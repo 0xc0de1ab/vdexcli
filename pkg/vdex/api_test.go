@@ -156,7 +156,7 @@ func buildMultiDexVDEX(t *testing.T, count int) []byte {
 	pu32(buf, 52, uint32(len(buf)))
 	pu32(buf, 56, 0)
 	for i := 0; i < count; i++ {
-		pu32(buf, headerSize+i*4, uint32(0xDEAD0000+i))
+		pu32(buf, headerSize+i*4, uint32(0xDEAD0000)+uint32(i))
 		copy(buf[dexOffset+i*len(dex):], dex)
 	}
 	return buf

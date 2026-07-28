@@ -71,7 +71,7 @@ func runDiff(cmd *cobra.Command, args []string) error {
 		warnA := len(reportA.Warnings)
 		warnB := len(reportB.Warnings)
 		if _, err := fmt.Fprintf(w, "status=%s file_a=%s file_b=%s size_a=%d size_b=%d sections=%d checksums=%d dexes=%d verifier=%d typelookup=%d warnings_a=%d warnings_b=%d\n",
-			status, diff.FileA, diff.FileB, diff.SizeA, diff.SizeB,
+			status, presenter.TerminalSafe(diff.FileA), presenter.TerminalSafe(diff.FileB), diff.SizeA, diff.SizeB,
 			diff.Summary.SectionsChanged, diff.Summary.ChecksumsChanged,
 			diff.Summary.DexFilesChanged, diff.Summary.VerifierChanged,
 			diff.Summary.TypeLookupChanged, warnA, warnB); err != nil {

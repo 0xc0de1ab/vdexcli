@@ -89,6 +89,20 @@ func TestExplainVdex_Verifier_OnlyOffsetTable(t *testing.T) {
 	assert.Contains(t, err.Error(), "outside payload range")
 }
 
+func TestExplainVdex_TypeLookupHonorsGlobalFieldBudget(t *testing.T) {
+	const entries = maxExplainFields/2 + 1
+	tableSize := uint32(entries * 8)
+	typeLookup := make([]byte, 4+tableSize)
+	binary.LittleEndian.PutUint32(typeLookup, tableSize)
+	path := buildTestVdex(t, nil, nil, typeLookup)
+
+	fieldMap, err := ExplainVdex(path)
+
+	require.Error(t, err)
+	assert.Nil(t, fieldMap)
+	assert.Contains(t, err.Error(), "analysis field limit exceeded")
+}
+
 func TestExplainVdex_Verifier_TruncatedSection(t *testing.T) {
 	vd := []byte{0x04, 0x00} // only 2 bytes
 	path := buildTestVdex(t, nil, vd, nil)

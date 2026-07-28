@@ -93,7 +93,7 @@ func runParse(cmd *cobra.Command, args []string) error {
 		res, e := extractor.Extract(path, raw, report, p.ExtractDir, opts)
 		if e != nil {
 			extractErr = e
-			fmt.Fprintf(os.Stderr, "extract error: %v\n", e)
+			fmt.Fprintf(os.Stderr, "extract error: %s\n", presenter.TerminalSafe(e.Error()))
 		}
 		report.Warnings = append(report.Warnings, res.Warnings...)
 		report.WarningsByCategory = presenter.GroupWarnings(report.Warnings)

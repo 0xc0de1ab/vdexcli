@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/0xc0de1ab/vdexcli/internal/model"
+	"github.com/0xc0de1ab/vdexcli/internal/presenter"
 	"github.com/spf13/cobra"
 )
 
@@ -12,7 +13,11 @@ var versionCmd = &cobra.Command{
 	Short: "Print vdexcli version",
 	Args:  cobra.NoArgs,
 	RunE: func(_ *cobra.Command, _ []string) error {
-		fmt.Printf("vdexcli version %s (%s)\n", model.CLIVersion, model.GitCommit)
+		fmt.Printf(
+			"vdexcli version %s (%s)\n",
+			presenter.TerminalSafe(model.CLIVersion),
+			presenter.TerminalSafe(model.GitCommit),
+		)
 		return nil
 	},
 }

@@ -1,7 +1,10 @@
 package dex
 
 import (
+	"crypto/sha1"
 	"encoding/binary"
+	"fmt"
+	"hash/adler32"
 	"math"
 	"testing"
 
@@ -12,15 +15,60 @@ import (
 )
 
 func buildMinDex(classDefsSize uint32) []byte {
-	d := make([]byte, 0x70)
+	stringIDsSize := classDefsSize * 4
+	typeIDsSize := classDefsSize * 4
+	classDefsBytes := classDefsSize * 32
+	stringDataSize := classDefsSize * 9
+	unpaddedSize := uint32(0x70) + stringIDsSize + typeIDsSize + classDefsBytes + stringDataSize
+	size := (unpaddedSize + 3) &^ 3
+	d := make([]byte, size)
 	copy(d[0:4], "dex\n")
 	copy(d[4:8], "035\x00")
 	binary.LittleEndian.PutUint32(d[0x08:], 0xCAFE)
-	binary.LittleEndian.PutUint32(d[0x20:], 0x70)
+	binary.LittleEndian.PutUint32(d[0x20:], size)
 	binary.LittleEndian.PutUint32(d[0x24:], 0x70)
 	binary.LittleEndian.PutUint32(d[0x28:], 0x12345678)
+	binary.LittleEndian.PutUint32(d[0x38:], classDefsSize)
+	binary.LittleEndian.PutUint32(d[0x40:], classDefsSize)
 	binary.LittleEndian.PutUint32(d[0x60:], classDefsSize)
+	if classDefsSize > 0 {
+		stringIDsOff := uint32(0x70)
+		typeIDsOff := stringIDsOff + stringIDsSize
+		classDefsOff := typeIDsOff + typeIDsSize
+		dataOff := classDefsOff + classDefsBytes
+		dataSize := size - dataOff
+		binary.LittleEndian.PutUint32(d[0x3C:], stringIDsOff)
+		binary.LittleEndian.PutUint32(d[0x44:], typeIDsOff)
+		binary.LittleEndian.PutUint32(d[0x64:], classDefsOff)
+		binary.LittleEndian.PutUint32(d[0x68:], dataSize)
+		binary.LittleEndian.PutUint32(d[0x6C:], dataOff)
+		for i := uint32(0); i < classDefsSize; i++ {
+			binary.LittleEndian.PutUint32(d[stringIDsOff+i*4:], dataOff+i*9)
+			binary.LittleEndian.PutUint32(d[typeIDsOff+i*4:], i)
+			binary.LittleEndian.PutUint32(d[classDefsOff+i*32:], i)
+			stringOff := dataOff + i*9
+			d[stringOff] = 7
+			copy(d[stringOff+1:], fmt.Sprintf("LTest%d;\x00", i))
+		}
+	}
 	return d
+}
+
+func buildDex041Header(fileSize, containerSize, headerOffset uint32) []byte {
+	raw := make([]byte, 0x78)
+	copy(raw[0:8], "dex\n041\x00")
+	binary.LittleEndian.PutUint32(raw[0x20:], fileSize)
+	binary.LittleEndian.PutUint32(raw[0x24:], 0x78)
+	binary.LittleEndian.PutUint32(raw[0x28:], 0x12345678)
+	binary.LittleEndian.PutUint32(raw[0x70:], containerSize)
+	binary.LittleEndian.PutUint32(raw[0x74:], headerOffset)
+	return raw
+}
+
+func sealDex(raw []byte) {
+	signature := sha1.Sum(raw[0x20:])
+	copy(raw[0x0C:0x20], signature[:])
+	binary.LittleEndian.PutUint32(raw[0x08:], adler32.Checksum(raw[0x0C:]))
 }
 
 // --- Parse ---
@@ -29,7 +77,7 @@ func TestParse_Valid(t *testing.T) {
 	raw := buildMinDex(3)
 	ctx, used, err := Parse(raw, 0x40)
 	require.NoError(t, err)
-	assert.Equal(t, 0x70, used)
+	assert.Equal(t, len(raw), used)
 	assert.Equal(t, uint32(0x40), ctx.Rep.Offset)
 	assert.Equal(t, "dex\n", ctx.Rep.Magic)
 	assert.Equal(t, "035", ctx.Rep.Version)
@@ -37,6 +85,25 @@ func TestParse_Valid(t *testing.T) {
 	assert.Equal(t, "little-endian", ctx.Rep.Endian)
 	assert.Equal(t, uint32(0xCAFE), ctx.Rep.ChecksumId)
 	assert.NotEmpty(t, ctx.Rep.Signature)
+	assert.False(t, ctx.Rep.ChecksumValid)
+	assert.False(t, ctx.Rep.SignatureValid)
+}
+
+func TestParse_VerifiesHeaderIntegrity(t *testing.T) {
+	raw := buildMinDex(1)
+	sealDex(raw)
+
+	ctx, _, err := Parse(raw, 0)
+
+	require.NoError(t, err)
+	assert.True(t, ctx.Rep.ChecksumValid)
+	assert.True(t, ctx.Rep.SignatureValid)
+
+	raw[len(raw)-1] ^= 0x01
+	ctx, _, err = Parse(raw, 0)
+	require.NoError(t, err)
+	assert.False(t, ctx.Rep.ChecksumValid)
+	assert.False(t, ctx.Rep.SignatureValid)
 }
 
 func TestParse_TooShort(t *testing.T) {
@@ -84,7 +151,7 @@ func TestParse_BigEndianTag(t *testing.T) {
 
 func TestParseSection_SingleDex(t *testing.T) {
 	dexData := buildMinDex(2)
-	raw := make([]byte, 200)
+	raw := make([]byte, 60+len(dexData))
 	copy(raw[60:], dexData)
 	s := model.VdexSection{Offset: 60, Size: uint32(len(dexData))}
 	ctxs, warnings := ParseSection(raw, s, 1)
@@ -139,6 +206,58 @@ func TestParseStrings_Valid(t *testing.T) {
 	require.Len(t, strs, 1)
 	assert.Equal(t, "hello", strs[0])
 	assert.Equal(t, "hello", m[8])
+}
+
+func TestParseStrings_DecodesModifiedUtf8(t *testing.T) {
+	raw := make([]byte, 24)
+	binary.LittleEndian.PutUint32(raw[0:], 8)
+	raw[8] = 4 // A, encoded NUL, and a surrogate pair are four UTF-16 code units.
+	copy(raw[9:], []byte{'A', 0xC0, 0x80, 0xED, 0xA0, 0xBD, 0xED, 0xB8, 0x80, 0})
+
+	strs, _, err := ParseStrings(raw, 1, 0)
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"A\x00😀"}, strs)
+}
+
+func TestParseStrings_RejectsUtf16LengthMismatch(t *testing.T) {
+	raw := make([]byte, 16)
+	binary.LittleEndian.PutUint32(raw[0:], 8)
+	raw[8] = 2
+	copy(raw[9:], "A\x00")
+
+	_, _, err := ParseStrings(raw, 1, 0)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "utf16_size")
+}
+
+func TestParseStrings_ReplacesIsolatedSurrogates(t *testing.T) {
+	raw := make([]byte, 24)
+	binary.LittleEndian.PutUint32(raw[0:], 8)
+	raw[8] = 3
+	copy(raw[9:], []byte{
+		0xED, 0xA0, 0x80, // isolated high surrogate
+		'A',
+		0xED, 0xB0, 0x80, // isolated low surrogate
+		0,
+	})
+
+	strings, _, err := ParseStrings(raw, 1, 0)
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"\uFFFDA\uFFFD"}, strings)
+}
+
+func TestParseStrings_LargeDeclaredLengthDoesNotOverflowGrowHint(t *testing.T) {
+	raw := make([]byte, 16)
+	binary.LittleEndian.PutUint32(raw[0:], 8)
+	copy(raw[8:], []byte{0xFF, 0xFF, 0xFF, 0xFF, 0x0F, 'A', 0})
+
+	_, _, err := ParseStrings(raw, 1, 0)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "utf16_size")
 }
 
 func TestParseStrings_RejectsOverlappingStringData(t *testing.T) {
@@ -229,10 +348,10 @@ func TestParseStrings_MalformedUtf8(t *testing.T) {
 func TestParseSection_MultipleDexes(t *testing.T) {
 	dex0 := buildMinDex(1)
 	dex1 := buildMinDex(2)
-	raw := make([]byte, 300)
+	raw := make([]byte, 60+len(dex0)+len(dex1))
 	copy(raw[60:], dex0)
-	copy(raw[60+0x70:], dex1)
-	s := model.VdexSection{Offset: 60, Size: uint32(0x70 * 2)}
+	copy(raw[60+len(dex0):], dex1)
+	s := model.VdexSection{Offset: 60, Size: uint32(len(dex0) + len(dex1))}
 	ctxs, _ := ParseSection(raw, s, 2)
 	assert.Len(t, ctxs, 2)
 	assert.Equal(t, 0, ctxs[0].Rep.Index)
@@ -267,10 +386,67 @@ func TestParse_UnsupportedVersion(t *testing.T) {
 	assert.Contains(t, err.Error(), "unsupported version")
 }
 
+func TestParseSection_Dex041ContainerRelativeOffsets(t *testing.T) {
+	const (
+		containerSize = 248
+		secondHeader  = 120
+	)
+	container := make([]byte, containerSize)
+	first := buildDex041Header(secondHeader, containerSize, 0)
+	binary.LittleEndian.PutUint32(first[0x38:], 1)
+	binary.LittleEndian.PutUint32(first[0x3C:], 240)
+	copy(container, first)
+	copy(container[secondHeader:], buildDex041Header(containerSize-secondHeader, containerSize, secondHeader))
+	binary.LittleEndian.PutUint32(container[240:], 244)
+	container[244] = 2
+	copy(container[245:], "ok\x00")
+
+	ctxs, diags := ParseSection(container, model.VdexSection{Size: containerSize}, 2)
+
+	require.Len(t, ctxs, 2, "diagnostics: %+v", diags)
+	assert.Equal(t, []string{"ok"}, ctxs[0].Strings)
+	assert.Equal(t, uint32(containerSize), ctxs[0].Rep.ContainerSize)
+	assert.Equal(t, uint32(secondHeader), ctxs[1].Rep.HeaderOffset)
+	assert.Equal(t, uint32(containerSize-secondHeader), ctxs[1].Rep.FileSize)
+}
+
+func TestParse_Dex041RejectsWrongHeaderOffset(t *testing.T) {
+	raw := buildDex041Header(0x78, 0x78, 4)
+
+	_, _, err := Parse(raw, 0)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "header_offset")
+}
+
+func TestParse_RejectsNonZeroTableCountWithZeroOffset(t *testing.T) {
+	raw := buildMinDex(0)
+	binary.LittleEndian.PutUint32(raw[0x50:], 1)
+
+	_, _, err := Parse(raw, 0)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "field_ids")
+}
+
+func TestParse_RejectsTableOutsideDeclaredFileSize(t *testing.T) {
+	first := buildMinDex(0)
+	binary.LittleEndian.PutUint32(first[0x38:], 1)
+	binary.LittleEndian.PutUint32(first[0x3C:], uint32(len(first)))
+	raw := append(first, buildMinDex(0)...)
+
+	ctx, used, err := Parse(raw, 0)
+
+	require.Error(t, err)
+	require.NotNil(t, ctx)
+	assert.Equal(t, len(first), used)
+	assert.Contains(t, err.Error(), "string_ids range")
+}
+
 func TestParseStrings_MaxCountDoesNotOverflow(t *testing.T) {
 	_, _, err := ParseStrings(make([]byte, 16), math.MaxUint32, 0)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "out of range")
+	assert.Contains(t, err.Error(), "exceeds safety limit")
 }
 
 func TestParseClassDefs_MaxCountDoesNotOverflow(t *testing.T) {
@@ -378,6 +554,53 @@ func TestParse_StringTableError(t *testing.T) {
 	assert.Equal(t, 0x70, used)
 }
 
+func TestValidateMapListRejectsUnknownType(t *testing.T) {
+	raw := make([]byte, 64)
+	const mapOffset = 4
+	binary.LittleEndian.PutUint32(raw[mapOffset:], 1)
+	binary.LittleEndian.PutUint16(raw[mapOffset+4:], 0x7777)
+	binary.LittleEndian.PutUint32(raw[mapOffset+8:], 1)
+	binary.LittleEndian.PutUint32(raw[mapOffset+12:], 16)
+
+	err := validateMapList(raw, mapOffset, 0, model.DexReport{})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown type")
+}
+
+func TestValidateMapListRejectsFixedItemOverlap(t *testing.T) {
+	raw := make([]byte, 256)
+	const mapOffset = 128
+	binary.LittleEndian.PutUint32(raw[mapOffset:], 2)
+	binary.LittleEndian.PutUint16(raw[mapOffset+4:], 0x0000)
+	binary.LittleEndian.PutUint32(raw[mapOffset+8:], 1)
+	binary.LittleEndian.PutUint32(raw[mapOffset+12:], 0)
+	binary.LittleEndian.PutUint16(raw[mapOffset+16:], 0x0001)
+	binary.LittleEndian.PutUint32(raw[mapOffset+20:], 1)
+	binary.LittleEndian.PutUint32(raw[mapOffset+24:], 100)
+
+	err := validateMapList(raw, mapOffset, 0, model.DexReport{
+		HeaderSize:   112,
+		StringIds:    1,
+		StringIdsOff: 100,
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "overlaps next item")
+}
+
+func TestValidateFixedTableRangesRejectsOverlap(t *testing.T) {
+	err := validateFixedTableRanges(0, 112, model.DexReport{
+		StringIds:    2,
+		StringIdsOff: 112,
+		TypeIds:      1,
+		TypeIdsOff:   116,
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "overlaps")
+}
+
 func TestParse_ClassDefsTableError(t *testing.T) {
 	// Valid header, no strings, but class_defs_off points out of range
 	raw := buildMinDex(3)                           // 3 class defs
@@ -386,6 +609,66 @@ func TestParse_ClassDefsTableError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "class_defs")
 	assert.NotNil(t, ctx)
+}
+
+func TestParse_RejectsOutOfRangeTypeDescriptor(t *testing.T) {
+	raw := buildMinDex(1)
+	typeIDsOff := binary.LittleEndian.Uint32(raw[0x44:])
+	binary.LittleEndian.PutUint32(raw[typeIDsOff:], 99)
+
+	_, _, err := Parse(raw, 0)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "descriptor_idx")
+}
+
+func TestParse_RejectsOutOfRangeSuperclass(t *testing.T) {
+	raw := buildMinDex(1)
+	classDefsOff := binary.LittleEndian.Uint32(raw[0x64:])
+	binary.LittleEndian.PutUint32(raw[classDefsOff+8:], 99)
+
+	_, _, err := Parse(raw, 0)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "superclass_idx")
+}
+
+func TestParse_ValidatesMapListStructure(t *testing.T) {
+	raw := append(buildMinDex(0), make([]byte, 28)...)
+	mapOff := uint32(0x70)
+	binary.LittleEndian.PutUint32(raw[0x20:], uint32(len(raw)))
+	binary.LittleEndian.PutUint32(raw[0x34:], mapOff)
+	binary.LittleEndian.PutUint32(raw[mapOff:], 2)
+	binary.LittleEndian.PutUint16(raw[mapOff+4:], 0)
+	binary.LittleEndian.PutUint32(raw[mapOff+8:], 1)
+	binary.LittleEndian.PutUint32(raw[mapOff+12:], 0)
+	binary.LittleEndian.PutUint16(raw[mapOff+16:], 0x1000)
+	binary.LittleEndian.PutUint32(raw[mapOff+20:], 1)
+	binary.LittleEndian.PutUint32(raw[mapOff+24:], mapOff)
+
+	ctx, _, err := Parse(raw, 0)
+
+	require.NoError(t, err)
+	require.NotNil(t, ctx)
+}
+
+func TestParse_RejectsDuplicateMapTypes(t *testing.T) {
+	raw := append(buildMinDex(0), make([]byte, 28)...)
+	mapOff := uint32(0x70)
+	binary.LittleEndian.PutUint32(raw[0x20:], uint32(len(raw)))
+	binary.LittleEndian.PutUint32(raw[0x34:], mapOff)
+	binary.LittleEndian.PutUint32(raw[mapOff:], 2)
+	for item := uint32(0); item < 2; item++ {
+		base := mapOff + 4 + item*12
+		binary.LittleEndian.PutUint16(raw[base:], 0)
+		binary.LittleEndian.PutUint32(raw[base+4:], 1)
+		binary.LittleEndian.PutUint32(raw[base+8:], 0)
+	}
+
+	_, _, err := Parse(raw, 0)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicates type")
 }
 
 func TestParseSection_CursorExceedsEnd(t *testing.T) {
@@ -418,13 +701,12 @@ func TestParseModifiedUtf8_OffsetOutOfRange(t *testing.T) {
 }
 
 func TestParseClassDefs_InvalidClassIdx(t *testing.T) {
-	// class_idx points beyond type_ids → should show <invalid>
+	// class_idx points beyond type_ids and must be rejected.
 	strs := []string{"Ljava/lang/Object;"}
 	raw := make([]byte, 40)
 	binary.LittleEndian.PutUint32(raw[0:], 0)  // type_id[0]
 	binary.LittleEndian.PutUint32(raw[8:], 99) // class_def[0].class_idx=99, but only 1 type
-	classes, err := ParseClassDefs(raw, strs, 1, 0, 8, 1)
-	require.NoError(t, err)
-	require.Len(t, classes, 1)
-	assert.Contains(t, classes[0], "<invalid")
+	_, err := ParseClassDefs(raw, strs, 1, 0, 8, 1)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "outside type_ids")
 }

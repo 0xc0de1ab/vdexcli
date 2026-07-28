@@ -19,15 +19,32 @@ func ParseSection(raw []byte, s model.VdexSection, expected int) ([]*model.DexCo
 	}
 	start := int(s.Offset)
 	end := int(end64)
+	container := raw[start:end]
+	containerV41 := len(container) >= 8 && string(container[4:7]) == "041"
 
 	cursor := start
 	for (expected == 0 && cursor < end) || (expected > 0 && len(out) < expected) {
-		if cursor+0x70 > end {
+		minHeaderSize := 0x70
+		if containerV41 {
+			minHeaderSize = 0x78
+		}
+		if cursor+minHeaderSize > end {
 			diags = append(diags, model.DiagDexTruncated(len(out)))
 			break
 		}
 		nextIdx := len(out)
-		ctx, used, err := Parse(raw[cursor:end], cursor)
+		if cursor+4 <= end && string(raw[cursor:cursor+4]) == "cdex" {
+			diags = append(diags, model.DiagCompactDexUnsupported(nextIdx))
+			break
+		}
+		var ctx *model.DexContext
+		var used int
+		var err error
+		if containerV41 {
+			ctx, used, err = parseAt(container, cursor-start, cursor)
+		} else {
+			ctx, used, err = Parse(raw[cursor:end], cursor)
+		}
 		if ctx != nil {
 			ctx.Rep.Index = nextIdx
 			if int(ctx.Rep.Offset)+int(ctx.Rep.Size) > end {

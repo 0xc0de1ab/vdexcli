@@ -331,8 +331,8 @@ func TestParseVerifierDex_InvalidLEB128(t *testing.T) {
 	badLEB := []byte{0x80, 0x80, 0x80, 0x80, 0x80, 0x80}
 
 	block := make([]byte, offsetTableSize)
-	binary.LittleEndian.PutUint32(block[0:], uint32(offsetTableSize))             // class 0 offset
-	binary.LittleEndian.PutUint32(block[4:], uint32(offsetTableSize+len(badLEB))) // sentinel
+	binary.LittleEndian.PutUint32(block[0:], uint32(4+offsetTableSize))             // class 0 offset
+	binary.LittleEndian.PutUint32(block[4:], uint32(4+offsetTableSize+len(badLEB))) // sentinel
 	block = append(block, badLEB...)
 	// pad + extra strings count = 0
 	for len(block)%4 != 0 {
@@ -346,7 +346,8 @@ func TestParseVerifierDex_InvalidLEB128(t *testing.T) {
 	copy(raw[4:], block)
 
 	s := model.VdexSection{Offset: uint32(sectionOffset), Size: uint32(len(raw))}
-	_, diags := ParseVerifierSection(raw, s, nil, 1)
+	dexCtx := []*model.DexContext{{Rep: model.DexReport{ClassDefs: 1}}}
+	_, diags := ParseVerifierSection(raw, s, dexCtx, 1)
 
 	hasLEB := false
 	for _, d := range diags {
@@ -425,6 +426,39 @@ func TestParseVerifierSection_MaxClassCountDoesNotOverflow(t *testing.T) {
 	assert.Equal(t, model.WarnVerifierBlockTruncated, diags[0].Code)
 }
 
+func TestParseVerifierSection_StopsAtPairWorkLimit(t *testing.T) {
+	pairBytes := (maxVerifierPairsScanned + 1) * 2
+	setStart := 12
+	setEnd := setStart + pairBytes
+	extraCountOffset := (setEnd + 3) &^ 3
+	raw := make([]byte, extraCountOffset+4)
+	binary.LittleEndian.PutUint32(raw[0:], 4)
+	binary.LittleEndian.PutUint32(raw[4:], uint32(setStart))
+	binary.LittleEndian.PutUint32(raw[8:], uint32(setEnd))
+	for offset := setStart; offset < setEnd; offset += 2 {
+		raw[offset] = 1
+		raw[offset+1] = 2
+	}
+	dexes := []*model.DexContext{{Rep: model.DexReport{ClassDefs: 1}}}
+
+	report, diags := ParseVerifierSection(
+		raw,
+		model.VdexSection{Size: uint32(len(raw))},
+		dexes,
+		1,
+	)
+
+	require.Len(t, report.Dexes, 1)
+	assert.Equal(t, maxVerifierPairsScanned, report.Dexes[0].AssignabilityPairs)
+	found := false
+	for _, diagnostic := range diags {
+		if diagnostic.Code == model.WarnVerifierWorkLimit {
+			found = true
+		}
+	}
+	assert.True(t, found)
+}
+
 func TestParseVerifierDex_ExtraStringsTruncated(t *testing.T) {
 	// Build block with pairs but extra strings table that exceeds section
 	classCount := 1
@@ -501,7 +535,7 @@ func TestParseVerifierDex_ExtraStringInvalidOffset(t *testing.T) {
 	assert.Equal(t, 1, report.Dexes[0].ExtraStringCount)
 }
 
-func TestParseVerifierDex_NoExtraStrings_EarlyReturn(t *testing.T) {
+func TestParseVerifierDex_MissingExtraStringCountIsDiagnosed(t *testing.T) {
 	// Block with class data but section ends before extra strings count
 	classCount := 1
 	offsetTableSize := (classCount + 1) * 4
@@ -519,13 +553,15 @@ func TestParseVerifierDex_NoExtraStrings_EarlyReturn(t *testing.T) {
 	s := model.VdexSection{Offset: uint32(sectionOffset), Size: uint32(len(raw))}
 	report, diags := ParseVerifierSection(raw, s, nil, 1)
 
-	// Should return without error, ExtraStringCount = 0
 	require.NotEmpty(t, report.Dexes)
 	assert.Equal(t, 0, report.Dexes[0].ExtraStringCount)
-	// No truncation diag since section cleanly ends
+	hasTruncation := false
 	for _, d := range diags {
-		assert.NotEqual(t, model.WarnVerifierExtrasTruncated, d.Code)
+		if d.Code == model.WarnVerifierExtrasTruncated {
+			hasTruncation = true
+		}
 	}
+	assert.True(t, hasTruncation)
 }
 
 func TestParseVerifierDex_DMInference(t *testing.T) {
@@ -572,8 +608,8 @@ func TestParseVerifierDex_SourceLEB128Error(t *testing.T) {
 	pairData := []byte{0x05, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80}
 
 	block := make([]byte, offsetTableSize)
-	binary.LittleEndian.PutUint32(block[0:], uint32(offsetTableSize))
-	binary.LittleEndian.PutUint32(block[4:], uint32(offsetTableSize+len(pairData)))
+	binary.LittleEndian.PutUint32(block[0:], uint32(4+offsetTableSize))
+	binary.LittleEndian.PutUint32(block[4:], uint32(4+offsetTableSize+len(pairData)))
 	block = append(block, pairData...)
 	for len(block)%4 != 0 {
 		block = append(block, 0)

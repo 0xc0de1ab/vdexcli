@@ -131,3 +131,31 @@ func TestWriteExplain_OffsetFilter(t *testing.T) {
 	assert.Contains(t, err.Error(), "no field covers offset 0x9")
 	assert.Contains(t, buf.String(), "No field found containing offset 0x9")
 }
+
+func TestWriteExplain_TextEscapesControlCharacters(t *testing.T) {
+	injected := "safe\x1b]52;c;payload\a\nnext"
+	pm := &model.PrimitiveMap{
+		Fields: []*model.PrimitiveField{{
+			Offset:      0,
+			Size:        1,
+			Type:        model.TypeCString,
+			RawBytes:    []byte{'x'},
+			ParsedValue: injected,
+			LogicalPath: injected,
+			Summary:     injected,
+			Description: injected,
+		}},
+		TotalBytes: 1,
+	}
+	offset := uint32(0)
+
+	for _, filter := range []*uint32{nil, &offset} {
+		var out bytes.Buffer
+		require.NoError(t, WriteExplain(&out, pm, "text", filter))
+		assert.NotContains(t, out.String(), "\x1b")
+		assert.NotContains(t, out.String(), "\a")
+		assert.Contains(t, out.String(), `\x1b]52`)
+		assert.Contains(t, out.String(), `\a`)
+		assert.Contains(t, out.String(), `\nnext`)
+	}
+}

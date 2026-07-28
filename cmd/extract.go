@@ -91,7 +91,7 @@ func runExtractDex(cmd *cobra.Command, args []string) error {
 			return err
 		}
 	default:
-		fmt.Printf("extracted %d dex files to %s\n", res.Extracted, outDir)
+		fmt.Printf("extracted %d dex files to %s\n", res.Extracted, presenter.TerminalSafe(outDir))
 		if res.Failed > 0 {
 			fmt.Printf("  failed: %d\n", res.Failed)
 		}

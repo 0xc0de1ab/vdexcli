@@ -76,10 +76,12 @@ type DiagCode string
 
 const (
 	// --- header errors ---
-	ErrFileTooSmall        DiagCode = "ERR_FILE_TOO_SMALL"
-	ErrInvalidMagic        DiagCode = "ERR_INVALID_MAGIC"
-	ErrSectionTableTrunc   DiagCode = "ERR_SECTION_TABLE_TRUNCATED"
-	ErrChecksumExceedsFile DiagCode = "ERR_CHECKSUM_EXCEEDS_FILE"
+	ErrFileTooSmall         DiagCode = "ERR_FILE_TOO_SMALL"
+	ErrInvalidMagic         DiagCode = "ERR_INVALID_MAGIC"
+	ErrSectionTableTrunc    DiagCode = "ERR_SECTION_TABLE_TRUNCATED"
+	ErrSectionHeaderOverlap DiagCode = "ERR_SECTION_HEADER_OVERLAP"
+	ErrChecksumExceedsFile  DiagCode = "ERR_CHECKSUM_EXCEEDS_FILE"
+	ErrLegacyDexSectionVer  DiagCode = "ERR_LEGACY_DEX_SECTION_VERSION"
 
 	// --- header warnings ---
 	WarnVersionMismatch DiagCode = "WARN_VERSION_MISMATCH"
@@ -96,15 +98,16 @@ const (
 	WarnNoChecksumSection DiagCode = "WARN_NO_CHECKSUM_SECTION"
 
 	// --- dex errors/warnings ---
-	ErrDexTooShort         DiagCode = "ERR_DEX_TOO_SHORT"
-	ErrDexInvalidMagic     DiagCode = "ERR_DEX_INVALID_MAGIC"
-	ErrDexInvalidFileSize  DiagCode = "ERR_DEX_INVALID_FILE_SIZE"
-	WarnDexSectionRange    DiagCode = "WARN_DEX_SECTION_RANGE"
-	WarnDexTruncated       DiagCode = "WARN_DEX_TRUNCATED"
-	WarnDexFileSizeClamped DiagCode = "WARN_DEX_FILESIZE_CLAMPED"
-	ErrDexStringsRange     DiagCode = "ERR_DEX_STRINGS_RANGE"
-	ErrDexTypeIdsRange     DiagCode = "ERR_DEX_TYPE_IDS_RANGE"
-	ErrDexClassDefsRange   DiagCode = "ERR_DEX_CLASS_DEFS_RANGE"
+	ErrDexTooShort            DiagCode = "ERR_DEX_TOO_SHORT"
+	ErrDexInvalidMagic        DiagCode = "ERR_DEX_INVALID_MAGIC"
+	ErrDexInvalidFileSize     DiagCode = "ERR_DEX_INVALID_FILE_SIZE"
+	WarnDexSectionRange       DiagCode = "WARN_DEX_SECTION_RANGE"
+	WarnDexTruncated          DiagCode = "WARN_DEX_TRUNCATED"
+	WarnDexFileSizeClamped    DiagCode = "WARN_DEX_FILESIZE_CLAMPED"
+	WarnCompactDexUnsupported DiagCode = "WARN_COMPACT_DEX_UNSUPPORTED"
+	ErrDexStringsRange        DiagCode = "ERR_DEX_STRINGS_RANGE"
+	ErrDexTypeIdsRange        DiagCode = "ERR_DEX_TYPE_IDS_RANGE"
+	ErrDexClassDefsRange      DiagCode = "ERR_DEX_CLASS_DEFS_RANGE"
 
 	// --- verifier warnings ---
 	WarnVerifierInferredCount   DiagCode = "WARN_VERIFIER_INFERRED_COUNT"
@@ -117,11 +120,13 @@ const (
 	WarnVerifierInvalidLEB128   DiagCode = "WARN_VERIFIER_INVALID_LEB128"
 	WarnVerifierExtrasTruncated DiagCode = "WARN_VERIFIER_EXTRAS_TRUNCATED"
 	WarnVerifierExtraInvalid    DiagCode = "WARN_VERIFIER_EXTRA_INVALID"
+	WarnVerifierWorkLimit       DiagCode = "WARN_VERIFIER_WORK_LIMIT"
 
 	// --- type lookup warnings ---
 	WarnTypeLookupSectionRange DiagCode = "WARN_TYPELOOKUP_SECTION_RANGE"
 	WarnTypeLookupTruncated    DiagCode = "WARN_TYPELOOKUP_TRUNCATED"
 	WarnTypeLookupDexExceeds   DiagCode = "WARN_TYPELOOKUP_DEX_EXCEEDS"
+	WarnTypeLookupDecode       DiagCode = "WARN_TYPELOOKUP_DECODE"
 )
 
 // Diagnostic constructors — each returns a fully populated ParseDiagnostic.
@@ -151,10 +156,22 @@ func DiagSectionTableTruncated(need uint64, have int) ParseDiagnostic {
 		"the file appears truncated; re-extract from the device or build output"}
 }
 
+func DiagSectionHeaderOverlap(kind uint32, offset uint32, headerEnd uint64) ParseDiagnostic {
+	return ParseDiagnostic{SeverityError, CatSection, ErrSectionHeaderOverlap,
+		fmt.Sprintf("section kind %d starts at %#x inside VDEX header/table ending at %#x", kind, offset, headerEnd),
+		"section payloads must start after the complete VDEX header and section table"}
+}
+
 func DiagChecksumExceedsFile() ParseDiagnostic {
 	return ParseDiagnostic{SeverityError, CatChecksum, ErrChecksumExceedsFile,
 		"checksum section exceeds file boundary",
 		"re-extract the file from device; use `vdexcli parse --format sections` to inspect raw section headers"}
+}
+
+func DiagLegacyDexSectionVersion(got string) ParseDiagnostic {
+	return ParseDiagnostic{SeverityError, CatHeader, ErrLegacyDexSectionVer,
+		fmt.Sprintf("unsupported legacy dex_section_version %q", got),
+		"supported values are \"000\" (no DEX section) and \"002\" (DEX section present)"}
 }
 
 func DiagChecksumAlignment() ParseDiagnostic {
@@ -249,6 +266,12 @@ func DiagDexFileSizeClamped(index int, declared, available uint32) ParseDiagnost
 		"DEX header file_size exceeds section bounds; parsing continues with clamped size"}
 }
 
+func DiagCompactDexUnsupported(index int) ParseDiagnostic {
+	return ParseDiagnostic{SeverityWarning, CatDex, WarnCompactDexUnsupported,
+		fmt.Sprintf("dex[%d]: CompactDex payload is not semantically decoded", index),
+		"the payload remains covered as a raw legacy DEX range; use Android ART tooling to inspect CompactDex internals"}
+}
+
 func DiagDexStringsRange(index int) ParseDiagnostic {
 	return ParseDiagnostic{SeverityError, CatDex, ErrDexStringsRange,
 		fmt.Sprintf("dex[%d]: string_ids offset/size out of dex range", index),
@@ -323,6 +346,12 @@ func DiagVerifierExtraInvalid(dexIdx, strIdx int, offset int) ParseDiagnostic {
 		"string offset points outside section; this string shown as placeholder"}
 }
 
+func DiagVerifierWorkLimit(dexIdx int, detail string) ParseDiagnostic {
+	return ParseDiagnostic{SeverityWarning, CatVerifier, WarnVerifierWorkLimit,
+		fmt.Sprintf("dex %d verifier decode stopped at safety limit: %s", dexIdx, detail),
+		"the input declares unusually large verifier data; use a trusted ART tool if full decoding is required"}
+}
+
 // --- type lookup constructors ---
 
 func DiagTypeLookupSectionRange() ParseDiagnostic {
@@ -341,6 +370,12 @@ func DiagTypeLookupDexExceeds(dexIdx int, size int) ParseDiagnostic {
 	return ParseDiagnostic{SeverityWarning, CatTypeLookup, WarnTypeLookupDexExceeds,
 		fmt.Sprintf("type-lookup dex %d size %d exceeds section", dexIdx, size),
 		"this dex's type-lookup table extends beyond section bounds; parsing stops here"}
+}
+
+func DiagTypeLookupDecode(dexIdx int, warning string) ParseDiagnostic {
+	return ParseDiagnostic{SeverityWarning, CatTypeLookup, WarnTypeLookupDecode,
+		fmt.Sprintf("type-lookup dex %d: %s", dexIdx, warning),
+		"lookup statistics may be incomplete; compare the table size with the source DEX class count"}
 }
 
 // UnknownSectionName formats a name for an unrecognized section kind.

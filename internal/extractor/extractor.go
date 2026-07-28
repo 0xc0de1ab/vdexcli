@@ -6,6 +6,7 @@
 package extractor
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,7 +20,6 @@ import (
 type FileWriter interface {
 	MkdirAll(path string, perm os.FileMode) error
 	WriteFile(name string, data []byte, perm os.FileMode) error
-	Stat(name string) (os.FileInfo, error)
 }
 
 // NameRenderer generates output filenames from a template and DEX metadata.
@@ -56,11 +56,17 @@ func (OSFileWriter) MkdirAll(path string, perm os.FileMode) error {
 }
 
 func (OSFileWriter) WriteFile(name string, data []byte, perm os.FileMode) error {
-	return os.WriteFile(name, data, perm)
-}
-
-func (OSFileWriter) Stat(name string) (os.FileInfo, error) {
-	return os.Stat(name)
+	file, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
+		return err
+	}
+	_, writeErr := file.Write(data)
+	closeErr := file.Close()
+	if writeErr != nil || closeErr != nil {
+		_ = os.Remove(name)
+		return errors.Join(writeErr, closeErr)
+	}
+	return nil
 }
 
 // TemplateRenderer implements NameRenderer using brace-delimited templates.
@@ -150,12 +156,12 @@ func (e *Extractor) Extract(vdexPath string, raw []byte, dexes []model.DexReport
 	}
 
 	usedPaths := map[string]struct{}{}
+	extractedRanges := map[string]struct{}{}
 	base := filepath.Base(vdexPath)
 
 	for _, d := range dexes {
-		start := int(d.Offset)
-		end := start + int(d.Size)
-		if start < 0 || end > len(raw) || end <= start {
+		start, end, rangeKey, rangeErr := extractionRange(d, len(raw))
+		if rangeErr != nil {
 			err := fmt.Errorf("dex[%d] invalid range %#x-%#x", d.Index, start, end)
 			res.Failed++
 			if opts.ContinueOnError {
@@ -163,6 +169,9 @@ func (e *Extractor) Extract(vdexPath string, raw []byte, dexes []model.DexReport
 				continue
 			}
 			return res, err
+		}
+		if _, duplicate := extractedRanges[rangeKey]; duplicate {
+			continue
 		}
 		name, warnMsg, err := e.Renderer.Render(tmpl, base, d)
 		if err != nil {
@@ -184,27 +193,38 @@ func (e *Extractor) Extract(vdexPath string, raw []byte, dexes []model.DexReport
 			}
 			return res, fmt.Errorf("invalid output name for dex[%d]: %w", d.Index, err)
 		}
-		path, err := e.uniquePath(outDir, name, usedPaths)
+		path, err := e.writeUniqueFile(outDir, name, raw[start:end], usedPaths)
 		if err != nil {
 			res.Failed++
 			if opts.ContinueOnError {
-				res.Warnings = append(res.Warnings, fmt.Sprintf("failed to select output path for dex[%d]: %v", d.Index, err))
-				continue
-			}
-			return res, err
-		}
-		if err := e.FS.WriteFile(path, raw[start:end], 0o644); err != nil {
-			if opts.ContinueOnError {
-				res.Failed++
 				res.Warnings = append(res.Warnings, fmt.Sprintf("failed to write dex[%d] -> %s: %v", d.Index, path, err))
 				continue
 			}
 			return res, err
 		}
 		res.Extracted++
+		extractedRanges[rangeKey] = struct{}{}
 	}
-	res.Failed = len(dexes) - res.Extracted
 	return res, nil
+}
+
+func extractionRange(d model.DexReport, rawSize int) (int, int, string, error) {
+	start := int(d.Offset)
+	end := start + int(d.Size)
+	if d.Version == "041" {
+		if d.ContainerSize == 0 || d.Offset < d.HeaderOffset {
+			return start, end, "", fmt.Errorf("invalid DEX 041 container metadata")
+		}
+		start = int(d.Offset - d.HeaderOffset)
+		end = start + int(d.ContainerSize)
+		if uint64(d.HeaderOffset)+uint64(d.Size) > uint64(d.ContainerSize) {
+			return start, end, "", fmt.Errorf("DEX 041 logical file exceeds its container")
+		}
+	}
+	if start < 0 || end > rawSize || end <= start {
+		return start, end, "", fmt.Errorf("range outside input")
+	}
+	return start, end, fmt.Sprintf("%d:%d", start, end), nil
 }
 
 func validateOutputName(name string) error {
@@ -220,24 +240,32 @@ func validateOutputName(name string) error {
 	return nil
 }
 
-func (e *Extractor) uniquePath(baseDir, name string, used map[string]struct{}) (string, error) {
+func (e *Extractor) writeUniqueFile(baseDir, name string, data []byte, used map[string]struct{}) (string, error) {
+	const maxAttempts = 10_000
+
 	stem := strings.TrimSuffix(name, filepath.Ext(name))
 	ext := filepath.Ext(name)
-	candidate := name
-	for idx := 1; ; idx++ {
-		path := filepath.Join(baseDir, candidate)
-		if _, existsUsed := used[path]; !existsUsed {
-			_, err := e.FS.Stat(path)
-			if os.IsNotExist(err) {
-				used[path] = struct{}{}
-				return path, nil
-			}
-			if err != nil {
-				return "", fmt.Errorf("stat output path %q: %w", path, err)
-			}
+	for idx := 0; idx < maxAttempts; idx++ {
+		candidate := name
+		if idx > 0 {
+			candidate = fmt.Sprintf("%s_%d%s", stem, idx, ext)
 		}
-		candidate = fmt.Sprintf("%s_%d%s", stem, idx, ext)
+		path := filepath.Join(baseDir, candidate)
+		if _, existsUsed := used[path]; existsUsed {
+			continue
+		}
+		err := e.FS.WriteFile(path, data, 0o644)
+		if err == nil {
+			used[path] = struct{}{}
+			return path, nil
+		}
+		if errors.Is(err, os.ErrExist) {
+			used[path] = struct{}{}
+			continue
+		}
+		return path, err
 	}
+	return "", fmt.Errorf("could not reserve a unique output name after %d attempts", maxAttempts)
 }
 
 func sanitize(v string) string {
