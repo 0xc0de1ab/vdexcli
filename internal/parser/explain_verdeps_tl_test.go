@@ -84,19 +84,18 @@ func TestExplainVdex_Verifier_OnlyOffsetTable(t *testing.T) {
 	binary.LittleEndian.PutUint32(vd, 4)
 	path := buildTestVdex(t, nil, vd, nil)
 	pm, err := ExplainVdex(path)
-	require.NoError(t, err)
-
-	assert.True(t, hasField(pm, "vdex.verifier.dex_offsets[0]"))
-	assert.False(t, hasField(pm, "vdex.verifier.dex[0].class_offsets[0]"))
+	require.Error(t, err)
+	assert.Nil(t, pm)
+	assert.Contains(t, err.Error(), "outside payload range")
 }
 
 func TestExplainVdex_Verifier_TruncatedSection(t *testing.T) {
 	vd := []byte{0x04, 0x00} // only 2 bytes
 	path := buildTestVdex(t, nil, vd, nil)
 	pm, err := ExplainVdex(path)
-	require.NoError(t, err)
-
-	assert.False(t, hasField(pm, "vdex.verifier.dex_offsets[0]"))
+	require.Error(t, err)
+	assert.Nil(t, pm)
+	assert.Contains(t, err.Error(), "offset table")
 }
 
 func TestExplainVdex_Verifier_AllUnverified(t *testing.T) {
@@ -192,11 +191,9 @@ func TestExplainVdex_Verifier_LargeOffsetTableCount(t *testing.T) {
 	require.NoError(t, os.WriteFile(tmpFile, raw, 0644))
 
 	pm, err := ExplainVdex(tmpFile)
-	require.NoError(t, err)
-
-	assert.True(t, hasField(pm, "vdex.verifier.dex_offsets[0]"))
-	assert.True(t, hasField(pm, "vdex.verifier.dex_offsets[1]"))
-	assert.False(t, hasField(pm, "vdex.verifier.dex_offsets[2]"))
+	require.Error(t, err)
+	assert.Nil(t, pm)
+	assert.Contains(t, err.Error(), "offset table")
 }
 
 func TestExplainVdex_Verifier_ZeroDexCount(t *testing.T) {
@@ -255,11 +252,14 @@ func TestExplainVdex_TypeLookup_SingleEntry(t *testing.T) {
 }
 
 func TestExplainVdex_TypeLookup_MaskBitsComputation(t *testing.T) {
-	dexData := make([]byte, 112)
+	const classCount = 15
+	dexData := make([]byte, 112+classCount*32)
 	copy(dexData[0:8], "dex\n035\x00")
-	binary.LittleEndian.PutUint32(dexData[0x20:0x24], 112)
+	binary.LittleEndian.PutUint32(dexData[0x20:0x24], uint32(len(dexData)))
 	binary.LittleEndian.PutUint32(dexData[0x24:0x28], 112)
-	binary.LittleEndian.PutUint32(dexData[0x60:0x64], 15)
+	binary.LittleEndian.PutUint32(dexData[0x28:0x2c], 0x12345678)
+	binary.LittleEndian.PutUint32(dexData[0x60:0x64], classCount)
+	binary.LittleEndian.PutUint32(dexData[0x64:0x68], 112)
 
 	tl := make([]byte, 12)
 	binary.LittleEndian.PutUint32(tl[0:4], 8)

@@ -623,9 +623,11 @@ vdexcli/
 │       └── color_wasm.go            # No-op overrides for WASM build
 ├── .github/
 │   └── workflows/
-│       ├── ci.yml                   # [01] CI Build (7 jobs)
-│       ├── release.yml              # Release pipeline
-│       └── test-integration.yml     # 166-file VDEX integration test
+│       ├── ci.yml                   # [01] CI Build and required gate
+│       ├── bump-up.yml              # [02] Version tag creation
+│       ├── release.yml              # [03] Release pipeline
+│       ├── pages-deploy.yml         # [04] Web/WASM Pages deployment
+│       └── test-integration.yml     # [05] 166-file integration test
 ├── docs/
 │   ├── architecture.md              # Package diagram + design decisions
 │   └── vdex-format.md              # VDEX v027 binary format reference
@@ -638,9 +640,9 @@ vdexcli/
 
 ## CI / Workflows
 
-### `[01] CI Build` — `ci.yml`
+### `[01] CI Build and test` — `ci.yml`
 
-Triggers: **push to `main`** and **manual dispatch** (`workflow_dispatch`).
+Triggers: **push to `main`**, **pull requests targeting `main`**, and manual dispatch (`workflow_dispatch`).
 
 | Job | What it checks |
 |-----|---------------|
@@ -651,15 +653,24 @@ Triggers: **push to `main`** and **manual dispatch** (`workflow_dispatch`).
 | `test` | `go test -v -count=1 ./...` · coverage ≥ 85% across all packages including `pkg/vdex/` |
 | `build` | 5-platform matrix (linux/darwin/windows × amd64/arm64) + linux/amd64 smoke test |
 | `build-wasm` | `GOOS=js GOARCH=wasm` build · uploads `vdex.wasm` artifact |
+| `[01] Required` | Requires every CI job above to succeed; use this as the branch-protection check |
 
-**Manual trigger:** GitHub → Actions → `[01] CI Build` → **Run workflow**
+**Manual trigger:** GitHub → Actions → `[01] CI Build and test` → **Run workflow**
 
-### `Release` — `release.yml`
+### `[02] Bump up` — `bump-up.yml`
+
+Manual workflow that validates a `vMAJOR.MINOR.PATCH` version, creates the tag from the current protected `main`, and triggers the release pipeline.
+
+### `[03] Release` — `release.yml`
 
 Triggers: version tag `v*.*.*` or `workflow_dispatch`.
 Produces: per-platform archives + SHA256 checksums + GitHub Release.
 
-### `test-integration.yml`
+### `[04] Build pages and deploy` — `pages-deploy.yml`
+
+Builds the Go WASM engine and Node 24 web app, runs the WASM bridge smoke test, and deploys the version-matched engine/runtime pair to GitHub Pages.
+
+### `[05] Integration tests` — `test-integration.yml`
 
 Triggers: weekly (Monday 00:00 UTC), push to main, `workflow_dispatch`.
 Runs: **166 real Android 16 VDEX files** through the full parser pipeline.

@@ -162,6 +162,30 @@ func TestValidateSections_BeyondFileStart(t *testing.T) {
 	assert.NotEmpty(t, diags[0].Hint)
 }
 
+func TestValidateSections_ReportsNestedOverlapsOncePerSection(t *testing.T) {
+	sections := []model.VdexSection{
+		{Kind: 0, Offset: 10, Size: 100},
+		{Kind: 1, Offset: 20, Size: 10},
+		{Kind: 2, Offset: 40, Size: 10},
+	}
+
+	diags := ValidateSections(200, sections)
+	require.Len(t, diags, 2)
+	assert.Contains(t, diags[0].Message, "overlaps")
+	assert.Contains(t, diags[1].Message, "overlaps")
+}
+
+func TestValidateSections_BoundsDiagnostics(t *testing.T) {
+	sections := make([]model.VdexSection, 1000)
+	for i := range sections {
+		sections[i] = model.VdexSection{Kind: uint32(i), Offset: 10, Size: 10}
+	}
+
+	diags := ValidateSections(100, sections)
+	require.Len(t, diags, maxSectionDiagnostics)
+	assert.Contains(t, diags[len(diags)-1].Message, "additional section diagnostic")
+}
+
 // --- ParseVdex integration tests ---
 
 func TestParseVdex_MinimalValidFile(t *testing.T) {
@@ -197,6 +221,16 @@ func TestParseVdex_MinimalValidFile(t *testing.T) {
 	assert.Empty(t, report.Dexes)
 	assert.Empty(t, report.Errors)
 	assert.NotNil(t, report.Coverage)
+}
+
+func TestParseVdex_RejectsExcessiveSectionCountBeforeTableParsing(t *testing.T) {
+	raw := buildRawHeader("vdex", "027\x00", maxVdexSectionCount+1)
+
+	report, _, err := ParseVdexBytes(raw, false)
+	require.Error(t, err)
+	require.NotNil(t, report)
+	require.NotEmpty(t, report.Errors)
+	assert.Contains(t, report.Errors[0], "exceeds safety limit")
 }
 
 func TestParseVdex_InvalidMagic(t *testing.T) {
@@ -518,6 +552,10 @@ func TestParseVdex_DiagnosticsPopulated_SectionZeroSize(t *testing.T) {
 		}
 	}
 	assert.GreaterOrEqual(t, zeroCount, 1, "at least one zero-size section diagnostic expected")
+	for _, d := range report.Diagnostics {
+		assert.NotEqual(t, model.WarnDexSectionRange, d.Code,
+			"an intentionally empty DEX section must not be reported as out of range")
+	}
 }
 
 func TestParseVdex_DiagnosticsPopulated_ErrorHasHint(t *testing.T) {

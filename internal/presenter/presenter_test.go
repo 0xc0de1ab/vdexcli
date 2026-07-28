@@ -333,6 +333,68 @@ func TestPrintText_Nil(t *testing.T) {
 	assert.Empty(t, old)
 }
 
+func TestTerminalSafeEscapesControlCharacters(t *testing.T) {
+	assert.Equal(t, `safe\x1b]52;c;payload\a\nnext`, terminalSafe("safe\x1b]52;c;payload\a\nnext"))
+	assert.Equal(t, "클래스", terminalSafe("클래스"))
+}
+
+func TestPrintText_EscapesParsedStrings(t *testing.T) {
+	SetColor(false)
+	r := sampleReport()
+	injected := "Lsafe;\x1b]52;c;payload\a"
+	r.Dexes = []model.DexReport{{
+		Index: 0, Magic: "dex\n", Version: "035", Classes: []string{injected},
+	}}
+	r.Verifier = &model.VerifierReport{
+		Dexes: []model.VerifierDexReport{{
+			FirstPairs: []model.VerifierPair{{Dest: injected, Src: injected}},
+		}},
+	}
+	r.TypeLookup = &model.TypeLookupReport{
+		Dexes: []model.TypeLookupDexReport{{
+			Samples: []model.TypeLookupSample{{Descriptor: injected}},
+		}},
+	}
+
+	out := captureStdout(func() { PrintText(r) })
+	assert.NotContains(t, out, "\x1b]52")
+	assert.Contains(t, out, `\x1b]52`)
+	assert.NotContains(t, out, "\a")
+	assert.Contains(t, out, `\a`)
+}
+
+func TestWriteTable_EscapesControlCharacters(t *testing.T) {
+	SetColor(false)
+	r := sampleReport()
+	r.Header.Magic = "vdex\x1b]52;c;payload\a"
+	r.Warnings = []string{"warning\x1b]52;c;payload\a"}
+
+	var buf bytes.Buffer
+	require.NoError(t, WriteTable(&buf, r))
+	assert.NotContains(t, buf.String(), "\x1b]52")
+	assert.Contains(t, buf.String(), `\x1b]52`)
+	assert.NotContains(t, buf.String(), "\a")
+}
+
+func TestWriteDiffText_EscapesControlCharacters(t *testing.T) {
+	SetColor(false)
+	d := model.VdexDiff{
+		FileA:         "a\x1b]52;c;payload\a.vdex",
+		FileB:         "b.vdex",
+		HeaderChanged: true,
+		HeaderDiff: &model.HeaderDiff{
+			MagicA: "vdex\x1b]52;c;payload\a",
+			MagicB: "vdex",
+		},
+	}
+
+	var buf bytes.Buffer
+	require.NoError(t, WriteDiffText(&buf, d))
+	assert.NotContains(t, buf.String(), "\x1b]52")
+	assert.Contains(t, buf.String(), `\x1b]52`)
+	assert.NotContains(t, buf.String(), "\a")
+}
+
 func TestPrintGroupedWarnings_Output(t *testing.T) {
 	out := captureStdout(func() {
 		PrintGroupedWarnings([]string{"section kind 3 has zero size", "verifier block truncated"})

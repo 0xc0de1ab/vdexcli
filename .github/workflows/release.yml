@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -17,8 +17,14 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - name: Validate release ref
+        run: |
+          if [[ ! "$GITHUB_REF" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Release workflow must run from a vMAJOR.MINOR.PATCH tag"
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
       - name: Install zstd
@@ -48,8 +54,8 @@ jobs:
             goarch: amd64
             suffix: '.exe'
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
       - name: Build
@@ -75,7 +81,7 @@ jobs:
           fi
           ls -lh ${ARCHIVE}.*
       - name: Upload artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: vdexcli-${{ matrix.goos }}-${{ matrix.goarch }}
           path: build/${{ matrix.goos }}-${{ matrix.goarch }}/release/vdexcli-*
@@ -84,12 +90,14 @@ jobs:
   publish:
     needs: release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
       release_url: ${{ steps.github_release.outputs.url }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Download all artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: dist
           merge-multiple: true
@@ -99,7 +107,7 @@ jobs:
         run: cd dist && sha256sum vdexcli-* > vdexcli-checksums.txt && cat vdexcli-checksums.txt
       - name: Create GitHub Release
         id: github_release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
           generate_release_notes: true
           files: dist/*

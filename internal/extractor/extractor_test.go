@@ -1,6 +1,7 @@
 package extractor
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -142,6 +143,49 @@ func TestExtractor_CustomRenderer(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, res.Extracted)
 	assert.Contains(t, fs.files, "/out/custom_name.dex")
+}
+
+func TestExtractor_RejectsUnsafeRenderedNames(t *testing.T) {
+	tests := []string{
+		"/tmp/owned.dex",
+		"../owned.dex",
+		"nested/owned.dex",
+		`nested\owned.dex`,
+		".",
+		"..",
+		"",
+	}
+	for _, name := range tests {
+		t.Run(fmt.Sprintf("%q", name), func(t *testing.T) {
+			fs := newMockFS()
+			ext := &Extractor{
+				FS:       fs,
+				Renderer: &mockRenderer{names: map[int]string{0: name}},
+			}
+			dexes := []model.DexReport{{Index: 0, Offset: 0, Size: 10}}
+
+			res, err := ext.Extract("app.vdex", make([]byte, 10), dexes, "/out", Options{})
+			require.Error(t, err)
+			assert.Equal(t, 1, res.Failed)
+			assert.Empty(t, fs.files)
+		})
+	}
+}
+
+func TestExtractor_ReturnsUnexpectedStatError(t *testing.T) {
+	fs := newMockFS()
+	fs.statErr["/out/custom.dex"] = errors.New("permission denied")
+	ext := &Extractor{
+		FS:       fs,
+		Renderer: &mockRenderer{names: map[int]string{0: "custom.dex"}},
+	}
+	dexes := []model.DexReport{{Index: 0, Offset: 0, Size: 10}}
+
+	res, err := ext.Extract("app.vdex", make([]byte, 10), dexes, "/out", Options{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "permission denied")
+	assert.Equal(t, 1, res.Failed)
+	assert.Empty(t, fs.files)
 }
 
 func TestExtractor_TemplateRenderer_ValidTokens(t *testing.T) {

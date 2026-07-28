@@ -4,9 +4,13 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"fmt"
+	"sort"
 
 	"github.com/0xc0de1ab/vdexcli/internal/model"
 )
+
+const maxSectionDiagnostics = 64
 
 func contentHash(data []byte) string {
 	sum := sha256.Sum256(data)
@@ -61,32 +65,73 @@ func ParseSections(buf []byte, count uint32) ([]model.VdexSection, map[uint32]in
 // ValidateSections checks every section's offset/size against the file size
 // and detects overlaps between sections.
 func ValidateSections(fileSize int, sections []model.VdexSection) []model.ParseDiagnostic {
-	var diags []model.ParseDiagnostic
+	type sectionRange struct {
+		section model.VdexSection
+		index   int
+		start   uint64
+		end     uint64
+	}
+
+	diags := make([]model.ParseDiagnostic, 0, min(len(sections), maxSectionDiagnostics))
+	diagnosticsOmitted := 0
+	appendDiag := func(d model.ParseDiagnostic) {
+		if len(diags) < maxSectionDiagnostics-1 {
+			diags = append(diags, d)
+			return
+		}
+		diagnosticsOmitted++
+	}
+
+	ranges := make([]sectionRange, 0, len(sections))
+	fileEnd := uint64(max(fileSize, 0))
 	for i, s := range sections {
-		start := int(s.Offset)
-		end := int(uint64(s.Offset) + uint64(s.Size))
-		if start < 0 || start > fileSize {
-			diags = append(diags, model.DiagSectionBeyondFile(s.Kind, s.Offset))
+		start := uint64(s.Offset)
+		end := start + uint64(s.Size)
+		if start > fileEnd {
+			appendDiag(model.DiagSectionBeyondFile(s.Kind, s.Offset))
 			continue
 		}
-		if end > fileSize {
-			diags = append(diags, model.DiagSectionExceedsFile(s.Kind, s.Offset, s.Size))
+		if end > fileEnd {
+			appendDiag(model.DiagSectionExceedsFile(s.Kind, s.Offset, s.Size))
 			continue
 		}
 		if s.Size == 0 {
-			diags = append(diags, model.DiagSectionZeroSize(s.Kind))
+			appendDiag(model.DiagSectionZeroSize(s.Kind))
+			continue
 		}
-		for j := 0; j < i; j++ {
-			other := sections[j]
-			otherStart := int(other.Offset)
-			otherEnd := int(uint64(other.Offset) + uint64(other.Size))
-			if other.Size == 0 || s.Size == 0 {
-				continue
+		ranges = append(ranges, sectionRange{section: s, index: i, start: start, end: end})
+	}
+
+	sort.Slice(ranges, func(i, j int) bool {
+		if ranges[i].start != ranges[j].start {
+			return ranges[i].start < ranges[j].start
+		}
+		if ranges[i].end != ranges[j].end {
+			return ranges[i].end > ranges[j].end
+		}
+		return ranges[i].index < ranges[j].index
+	})
+
+	if len(ranges) > 0 {
+		furthest := ranges[0]
+		for _, current := range ranges[1:] {
+			if current.start < furthest.end {
+				appendDiag(model.DiagSectionOverlap(current.section.Kind, furthest.section.Kind))
 			}
-			if start < otherEnd && otherStart < end {
-				diags = append(diags, model.DiagSectionOverlap(s.Kind, other.Kind))
+			if current.end > furthest.end {
+				furthest = current
 			}
 		}
+	}
+
+	if diagnosticsOmitted > 0 {
+		diags = append(diags, model.ParseDiagnostic{
+			Severity: model.SeverityWarning,
+			Category: model.CatSection,
+			Code:     model.DiagCode("WARN_SECTION_DIAGNOSTICS_TRUNCATED"),
+			Message:  fmt.Sprintf("%d additional section diagnostic(s) omitted", diagnosticsOmitted),
+			Hint:     "fix the first reported section errors before inspecting additional overlap diagnostics",
+		})
 	}
 	return diags
 }

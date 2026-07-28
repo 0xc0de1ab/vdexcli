@@ -22,6 +22,8 @@ const (
 	dexPreviewDescriptorLimit = 4096
 	dexPreviewPackageLimit    = 3
 	dexPreviewSampleLimit     = 512
+	dexStringPreviewLimit     = 256
+	maxExplainCollectionItems = 1 << 20
 )
 
 // dexSectionInfo describes a known DEX payload section (offset relative to
@@ -133,12 +135,23 @@ func buildDexPreview(p dexPayloadParams) model.DexPreview {
 }
 
 func dexTableInRange(p dexPayloadParams, offset uint32, count uint32, itemSize uint32) bool {
-	if offset == 0 || count == 0 {
-		return false
+	_, ok := dexTableSizeInRange(p, offset, count, itemSize)
+	return ok
+}
+
+func dexTableSizeInRange(p dexPayloadParams, offset uint32, count uint32, itemSize uint32) (uint32, bool) {
+	if offset == 0 || count == 0 || itemSize == 0 || count > maxExplainCollectionItems {
+		return 0, false
 	}
-	tableEnd := uint64(offset) + uint64(count)*uint64(itemSize)
+	size := uint64(count) * uint64(itemSize)
+	tableEnd := uint64(offset) + size
 	absEnd := uint64(p.dexStart) + tableEnd
-	return tableEnd <= uint64(p.effectiveSize) && absEnd <= uint64(len(p.raw))
+	if size > uint64(^uint32(0)) ||
+		tableEnd > uint64(p.effectiveSize) ||
+		absEnd > uint64(len(p.raw)) {
+		return 0, false
+	}
+	return uint32(size), true
 }
 
 func resolveDexClassDescriptor(p dexPayloadParams, classIdx uint32) (string, bool) {
@@ -242,6 +255,7 @@ func annotateMapList(r *AnnotatedReader, raw []byte, secName string, secOff, sec
 // annotateStringIds reads string_ids table and resolves inline string values.
 func annotateStringIds(r *AnnotatedReader, raw []byte, secName string, secSize, dexStart, dexEnd, stringIdsSize uint32) {
 	count := secSize / 4
+	resolvedByOffset := make(map[uint32]string, min(int(count), 4096))
 	for j := uint32(0); j < count; j++ {
 		strDataOff := r.ReadUint32LE(
 			fmt.Sprintf("%s[%d]", secName, j),
@@ -249,17 +263,27 @@ func annotateStringIds(r *AnnotatedReader, raw []byte, secName string, secSize, 
 			"") // Description filled below
 
 		// Resolve the string_data_item inline for display
-		var resolvedStr string
-		sdAbs := int(dexStart) + int(strDataOff)
-		if sdAbs >= 0 && sdAbs < len(raw) && sdAbs < int(dexEnd) {
-			_, ulebLen, err := binutil.ReadULEB128(raw, sdAbs)
-			strStart := sdAbs + ulebLen
-			limit := min(len(raw), int(dexEnd))
-			if err == nil && strStart < limit {
-				if n := bytes.IndexByte(raw[strStart:limit], 0); n >= 0 {
-					resolvedStr = string(raw[strStart : strStart+n])
+		resolvedStr, cached := resolvedByOffset[strDataOff]
+		if !cached {
+			sdAbs64 := uint64(dexStart) + uint64(strDataOff)
+			if sdAbs64 < uint64(dexEnd) && sdAbs64 < uint64(len(raw)) {
+				sdAbs := int(sdAbs64)
+				_, ulebLen, err := binutil.ReadULEB128(raw, sdAbs)
+				strStart := sdAbs + ulebLen
+				limit := min(len(raw), int(dexEnd))
+				if err == nil && strStart < limit {
+					if n := bytes.IndexByte(raw[strStart:limit], 0); n >= 0 {
+						value := raw[strStart : strStart+n]
+						if len(value) > dexStringPreviewLimit {
+							value = value[:dexStringPreviewLimit]
+							resolvedStr = string(value) + "..."
+						} else {
+							resolvedStr = string(value)
+						}
+					}
 				}
 			}
+			resolvedByOffset[strDataOff] = resolvedStr
 		}
 
 		desc := fmt.Sprintf(
@@ -317,14 +341,19 @@ func annotateStringDataItems(
 ) {
 	// Collect string_data offsets from the string_ids table
 	var stringDataOffsets []uint32
-	if stringIdsOff > 0 && stringIdsSize > 0 {
+	tableSize := uint64(stringIdsSize) * 4
+	tableEnd := uint64(stringIdsOff) + tableSize
+	absTableEnd := uint64(dexStart) + tableEnd
+	if stringIdsOff > 0 && stringIdsSize > 0 &&
+		stringIdsSize <= maxExplainCollectionItems &&
+		tableEnd <= uint64(effectiveSize) &&
+		absTableEnd <= uint64(len(raw)) {
+		stringDataOffsets = make([]uint32, 0, stringIdsSize)
 		for si := uint32(0); si < stringIdsSize; si++ {
-			soOff := int(dexStart) + int(stringIdsOff) + int(si*4)
-			if soOff+4 <= len(raw) {
-				strDataOff := binary.LittleEndian.Uint32(raw[soOff : soOff+4])
-				if strDataOff >= payloadCursor && strDataOff < effectiveSize {
-					stringDataOffsets = append(stringDataOffsets, strDataOff)
-				}
+			soOff := uint64(dexStart) + uint64(stringIdsOff) + uint64(si)*4
+			strDataOff := binary.LittleEndian.Uint32(raw[int(soOff) : int(soOff)+4])
+			if strDataOff >= payloadCursor && strDataOff < effectiveSize {
+				stringDataOffsets = append(stringDataOffsets, strDataOff)
 			}
 		}
 		sort.Slice(stringDataOffsets, func(i, j int) bool {
@@ -388,15 +417,19 @@ func annotateStringDataItems(
 		}
 		strLen := nullAt
 		itemSize := ulebLen + strLen + 1
-		strVal := string(raw[strStart : strStart+strLen])
+		previewLen := min(strLen, dexStringPreviewLimit)
+		strPreview := string(raw[strStart : strStart+previewLen])
+		if previewLen < strLen {
+			strPreview += "..."
+		}
 		r.SetOffset(uint32(sdAbs))
 		r.ReadBytes(itemSize,
 			fmt.Sprintf("vdex.dex[%d].string_data[%d]", dexIdx, si),
-			fmt.Sprintf("string_data_item[%d]: %q", si, strVal),
+			fmt.Sprintf("string_data_item[%d]: %q", si, strPreview),
 			fmt.Sprintf(
 				"MUTF-8 encoded string data: utf16_size=%d (ULEB128, %d byte(s)), "+
 					"chars=%q, null_terminator. Pointed to by string_ids[%d].",
-				uleb, ulebLen, strVal, si))
+				uleb, ulebLen, strPreview, si))
 		dataCursor = strOff + uint32(itemSize)
 	}
 
@@ -442,31 +475,37 @@ func annotateDexPayload(p dexPayloadParams) {
 		if off == 0 || size == 0 {
 			return
 		}
-		if off+size > effectiveSize {
-			if off >= effectiveSize {
-				return
-			}
-			size = effectiveSize - off
+		end := uint64(off) + uint64(size)
+		if end > uint64(effectiveSize) ||
+			uint64(dexStart)+end > uint64(len(raw)) {
+			return
 		}
 		knownSections = append(knownSections, dexSectionInfo{off: off, size: size, name: name, desc: desc})
 	}
+	addTable := func(off, count, itemSize uint32, name, desc string) {
+		size, ok := dexTableSizeInRange(p, off, count, itemSize)
+		if !ok {
+			return
+		}
+		addSec(off, size, name, desc)
+	}
 
-	addSec(p.stringIdsOff, p.stringIdsSize*4,
+	addTable(p.stringIdsOff, p.stringIdsSize, 4,
 		fmt.Sprintf("vdex.dex[%d].string_ids", dexIdx),
 		fmt.Sprintf("String IDs table: %d entries × 4B. Each is a file offset to a string_data_item.", p.stringIdsSize))
-	addSec(p.typeIdsOff, p.typeIdsSize*4,
+	addTable(p.typeIdsOff, p.typeIdsSize, 4,
 		fmt.Sprintf("vdex.dex[%d].type_ids", dexIdx),
 		fmt.Sprintf("Type IDs table: %d entries × 4B. Each is an index into the string IDs list.", p.typeIdsSize))
-	addSec(p.protoIdsOff, p.protoIdsSize*12,
+	addTable(p.protoIdsOff, p.protoIdsSize, 12,
 		fmt.Sprintf("vdex.dex[%d].proto_ids", dexIdx),
 		fmt.Sprintf("Proto IDs table: %d entries × 12B (shorty_idx[4]+return_type_idx[4]+parameters_off[4]).", p.protoIdsSize))
-	addSec(p.fieldIdsOff, p.fieldIdsSize*8,
+	addTable(p.fieldIdsOff, p.fieldIdsSize, 8,
 		fmt.Sprintf("vdex.dex[%d].field_ids", dexIdx),
 		fmt.Sprintf("Field IDs table: %d entries × 8B (class_idx[2]+type_idx[2]+name_idx[4]).", p.fieldIdsSize))
-	addSec(p.methodIdsOff, p.methodIdsSize*8,
+	addTable(p.methodIdsOff, p.methodIdsSize, 8,
 		fmt.Sprintf("vdex.dex[%d].method_ids", dexIdx),
 		fmt.Sprintf("Method IDs table: %d entries × 8B (class_idx[2]+proto_idx[2]+name_idx[4]).", p.methodIdsSize))
-	addSec(p.classDefsOff, p.classDefsSize*32,
+	addTable(p.classDefsOff, p.classDefsSize, 32,
 		fmt.Sprintf("vdex.dex[%d].class_defs", dexIdx),
 		fmt.Sprintf("Class Defs table: %d entries × 32B per class definition.", p.classDefsSize))
 	if p.linkSize > 0 && p.linkOff > 0 {
@@ -475,16 +514,18 @@ func annotateDexPayload(p dexPayloadParams) {
 			"Link section data (statically linked libraries, unused in most DEX files).")
 	}
 	if p.mapOff > 0 && p.mapOff < effectiveSize {
-		mapOffAbs := int(dexStart) + int(p.mapOff)
-		if mapOffAbs+4 <= int(dexEnd) && mapOffAbs+4 <= len(raw) {
+		mapOffAbs64 := uint64(dexStart) + uint64(p.mapOff)
+		if mapOffAbs64+4 <= uint64(dexEnd) && mapOffAbs64+4 <= uint64(len(raw)) {
+			mapOffAbs := int(mapOffAbs64)
 			mapCount := binary.LittleEndian.Uint32(raw[mapOffAbs : mapOffAbs+4])
-			mapSize := 4 + mapCount*12
-			if p.mapOff+mapSize > effectiveSize {
-				mapSize = effectiveSize - p.mapOff
+			maxEntries := (uint64(effectiveSize) - uint64(p.mapOff) - 4) / 12
+			effectiveCount := min(uint64(mapCount), maxEntries, uint64(maxExplainCollectionItems))
+			mapSize64 := 4 + effectiveCount*12
+			if mapSize64 <= uint64(^uint32(0)) {
+				addSec(p.mapOff, uint32(mapSize64),
+					fmt.Sprintf("vdex.dex[%d].map_list", dexIdx),
+					fmt.Sprintf("Map list: %d declared entries, %d readable. Lists all section types in this DEX file.", mapCount, effectiveCount))
 			}
-			addSec(p.mapOff, mapSize,
-				fmt.Sprintf("vdex.dex[%d].map_list", dexIdx),
-				fmt.Sprintf("Map list: %d entries. Lists all section types in this DEX file.", mapCount))
 		}
 	}
 
@@ -526,10 +567,12 @@ func annotateDexPayload(p dexPayloadParams) {
 			payloadCursor = sec.off
 		}
 
-		absOff := dexStart + sec.off
-		if absOff+sec.size > dexEnd {
-			sec.size = dexEnd - absOff
+		absOff64 := uint64(dexStart) + uint64(sec.off)
+		absEnd64 := absOff64 + uint64(sec.size)
+		if absEnd64 > uint64(dexEnd) || absEnd64 > uint64(len(raw)) {
+			continue
 		}
+		absOff := uint32(absOff64)
 		if sec.size == 0 {
 			continue
 		}

@@ -49,6 +49,22 @@ func TestParseTypeLookupSection_DexExceedsSection(t *testing.T) {
 	assert.NotEmpty(t, diags[0].Hint)
 }
 
+func TestParseTypeLookupSection_MaxSizeDoesNotOverflow(t *testing.T) {
+	raw := make([]byte, 8)
+	binary.LittleEndian.PutUint32(raw, ^uint32(0))
+
+	report, diags := ParseTypeLookupSection(
+		raw,
+		model.VdexSection{Size: uint32(len(raw))},
+		nil,
+		1,
+	)
+
+	assert.Empty(t, report.Dexes)
+	require.Len(t, diags, 1)
+	assert.Equal(t, model.WarnTypeLookupDexExceeds, diags[0].Code)
+}
+
 func TestParseTypeLookupSection_SingleDex(t *testing.T) {
 	// Build: 4 buckets (32 bytes), 2 non-empty
 	entries := make([]byte, 0, 32)

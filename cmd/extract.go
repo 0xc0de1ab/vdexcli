@@ -48,6 +48,12 @@ func runExtractDex(cmd *cobra.Command, args []string) error {
 	}
 	if err != nil {
 		report.Errors = append(report.Errors, err.Error())
+		return parseErr
+	}
+
+	report.WarningsByCategory = presenter.GroupWarnings(report.Warnings)
+	if strictMatched := applyStrict(cmd, report); len(strictMatched) > 0 {
+		return fmt.Errorf("strict mode: %d matching warning(s): %v", len(strictMatched), strictMatched)
 	}
 
 	opts := extractor.Options{
@@ -59,10 +65,6 @@ func runExtractDex(cmd *cobra.Command, args []string) error {
 	report.WarningsByCategory = presenter.GroupWarnings(report.Warnings)
 	if err != nil {
 		return fmt.Errorf("extract-dex: %w", err)
-	}
-
-	if strictMatched := applyStrict(cmd, report); len(strictMatched) > 0 {
-		return fmt.Errorf("strict mode: %d matching warning(s): %v", len(strictMatched), strictMatched)
 	}
 
 	summary := model.ExtractSummary{
@@ -96,9 +98,6 @@ func runExtractDex(cmd *cobra.Command, args []string) error {
 		if len(report.Warnings) > 0 {
 			presenter.PrintGroupedWarnings(report.Warnings)
 		}
-	}
-	if parseErr != nil {
-		return parseErr
 	}
 	return nil
 }

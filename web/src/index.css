@@ -80,6 +80,7 @@ button {
 .brand-lockup,
 .progress-header,
 .progress-status,
+.progress-actions,
 .elapsed-time,
 .file-identity,
 .structure-toolbar,
@@ -294,6 +295,15 @@ button {
   color: var(--muted);
   font-family: var(--mono);
   font-size: 12px;
+}
+
+.progress-actions {
+  flex: 0 0 auto;
+  gap: 10px;
+}
+
+.progress-cancel {
+  min-height: 32px;
 }
 
 .progress-track {
@@ -1009,7 +1019,13 @@ button {
   }
 
   .elapsed-time {
+    padding-left: 0;
+  }
+
+  .progress-actions {
+    width: 100%;
     padding-left: 36px;
+    justify-content: space-between;
   }
 
   .analysis-summary {

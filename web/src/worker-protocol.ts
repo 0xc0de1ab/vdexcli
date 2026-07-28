@@ -67,10 +67,11 @@ export interface StructureAnalysis {
 }
 
 export type WorkerRequest =
-  | { type: 'init'; baseUrl: string }
+  | { type: 'init'; baseUrl: string; engineVersion: string }
   | { type: 'analyze'; requestId: number; buffer: ArrayBuffer }
   | { type: 'children'; requestId: number; analysisId: number; nodeId: number }
-  | { type: 'find-offset'; requestId: number; analysisId: number; offset: number };
+  | { type: 'find-offset'; requestId: number; analysisId: number; offset: number }
+  | { type: 'dispose'; analysisId?: number };
 
 export type WorkerResponse =
   | { type: 'ready' }

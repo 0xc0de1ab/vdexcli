@@ -32,12 +32,14 @@ func ParseTypeLookupSection(raw []byte, s model.VdexSection, dexes []*model.DexC
 			diags = append(diags, model.DiagTypeLookupTruncated(i))
 			break
 		}
-		size := int(binutil.ReadU32(raw, cursor))
+		sizeValue := binutil.ReadU32(raw, cursor)
 		cursor += 4
-		if cursor+size > end {
-			diags = append(diags, model.DiagTypeLookupDexExceeds(i, size))
+		tableEnd64 := uint64(cursor) + uint64(sizeValue)
+		if tableEnd64 > uint64(end) {
+			diags = append(diags, model.DiagTypeLookupDexExceeds(i, diagnosticOffset(sizeValue)))
 			break
 		}
+		size := int(sizeValue)
 		var d *model.DexContext
 		if i < len(dexes) {
 			d = dexes[i]

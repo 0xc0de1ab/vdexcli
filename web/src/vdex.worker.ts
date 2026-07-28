@@ -1,9 +1,10 @@
 // Keep these types local so Vite serves this file as a classic worker in development.
 type WorkerRequest =
-  | { type: 'init'; baseUrl: string }
+  | { type: 'init'; baseUrl: string; engineVersion: string }
   | { type: 'analyze'; requestId: number; buffer: ArrayBuffer }
   | { type: 'children'; requestId: number; analysisId: number; nodeId: number }
-  | { type: 'find-offset'; requestId: number; analysisId: number; offset: number };
+  | { type: 'find-offset'; requestId: number; analysisId: number; offset: number }
+  | { type: 'dispose'; analysisId?: number };
 
 type StructureNodeKind = 'root' | 'group' | 'array' | 'range' | 'item' | 'field' | 'gap';
 
@@ -98,7 +99,7 @@ interface GoRuntime {
 }
 
 interface VdexApi {
-  explain: (data: Uint8Array) => unknown;
+  explainStructure: (data: Uint8Array) => unknown;
 }
 
 interface WorkerScope {
@@ -113,7 +114,7 @@ interface RawField {
   offset: number;
   size: number;
   type: string;
-  parsed_value: unknown;
+  parsed_value?: unknown;
   logical_path: string;
   description?: string;
 }
@@ -163,19 +164,36 @@ const messageFromError = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
 const waitForApi = async () => {
-  for (let attempt = 0; attempt < 100 && !scope.vdex; attempt += 1) {
+  for (
+    let attempt = 0;
+    attempt < 100 && typeof scope.vdex?.explainStructure !== 'function';
+    attempt += 1
+  ) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  if (!scope.vdex) throw new Error('VDEX WASM API was not registered');
+  if (typeof scope.vdex?.explainStructure !== 'function') {
+    throw new Error('VDEX WASM structure API was not registered');
+  }
 };
 
-const initialize = async (baseUrl: string) => {
-  const runtimeUrl = `${baseUrl}wasm_exec.js`;
+const engineAssetUrl = (
+  baseUrl: string,
+  name: 'vdex' | 'wasm_exec',
+  extension: 'wasm' | 'js',
+  engineVersion: string,
+): string => {
+  const suffix = engineVersion ? `.${encodeURIComponent(engineVersion)}` : '';
+  return `${baseUrl}${name}${suffix}.${extension}`;
+};
+
+const initialize = async (baseUrl: string, engineVersion: string) => {
+  const runtimeUrl = engineAssetUrl(baseUrl, 'wasm_exec', 'js', engineVersion);
   scope.importScripts(runtimeUrl);
   if (!scope.Go) throw new Error('Go WASM runtime is unavailable');
 
   const go = new scope.Go();
-  const response = await fetch(`${baseUrl}vdex.wasm`);
+  const wasmUrl = engineAssetUrl(baseUrl, 'vdex', 'wasm', engineVersion);
+  const response = await fetch(wasmUrl);
   if (!response.ok) {
     throw new Error(`WASM request failed: ${response.status} ${response.statusText}`);
   }
@@ -186,8 +204,28 @@ const initialize = async (baseUrl: string) => {
   } catch {
     result = await WebAssembly.instantiate(await response.arrayBuffer(), go.importObject);
   }
-  void go.run(result.instance);
-  await waitForApi();
+  const runtime = go.run(result.instance);
+  await Promise.race([
+    waitForApi(),
+    runtime.then(() => {
+      throw new Error('Go WASM runtime stopped before registering its API');
+    }),
+  ]);
+  void runtime.then(
+    () => {
+      activeAnalysis = null;
+      scope.vdex = undefined;
+      scope.postMessage({ type: 'error', message: 'Go WASM runtime stopped unexpectedly' });
+    },
+    (error: unknown) => {
+      activeAnalysis = null;
+      scope.vdex = undefined;
+      scope.postMessage({
+        type: 'error',
+        message: `Go WASM runtime failed: ${messageFromError(error)}`,
+      });
+    },
+  );
 };
 
 const newBuildNode = (key: string, index?: number): BuildNode => ({
@@ -674,7 +712,7 @@ const analyze = async (requestId: number, buffer: ArrayBuffer) => {
   });
 
   const startedAt = performance.now();
-  const result = scope.vdex.explain(new Uint8Array(buffer));
+  const result = scope.vdex.explainStructure(new Uint8Array(buffer));
   const parsedResult = typeof result === 'string' ? JSON.parse(result) as unknown : result;
   const analysisMs = performance.now() - startedAt;
   const fields =
@@ -721,12 +759,19 @@ const analyze = async (requestId: number, buffer: ArrayBuffer) => {
 scope.onmessage = (event) => {
   const message = event.data;
   if (message.type === 'init') {
-    engineReady = initialize(message.baseUrl);
+    engineReady = initialize(message.baseUrl, message.engineVersion);
     void engineReady
       .then(() => scope.postMessage({ type: 'ready' }))
       .catch((error: unknown) => {
         scope.postMessage({ type: 'error', message: messageFromError(error) });
       });
+    return;
+  }
+
+  if (message.type === 'dispose') {
+    if (message.analysisId === undefined || activeAnalysis?.requestId === message.analysisId) {
+      activeAnalysis = null;
+    }
     return;
   }
 

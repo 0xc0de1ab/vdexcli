@@ -50,7 +50,7 @@ func PrintGroupedWarnings(warnings []string) {
 		}
 		fmt.Printf("%s\n", c(boldYlw, fmt.Sprintf("%s warnings (%d):", cat, len(ws))))
 		for _, w := range ws {
-			fmt.Printf("  %s %s\n", c(yellow, "!"), w)
+			fmt.Printf("  %s %s\n", c(yellow, "!"), terminalSafe(w))
 		}
 	}
 }
@@ -75,9 +75,9 @@ func PrintGroupedDiagnostics(diags []model.ParseDiagnostic) {
 		}
 		fmt.Printf("%s\n", c(boldYlw, fmt.Sprintf("%s warnings (%d):", cat, len(warns))))
 		for _, d := range warns {
-			fmt.Printf("  %s %s\n", c(yellow, "!"), d.Message)
+			fmt.Printf("  %s %s\n", c(yellow, "!"), terminalSafe(d.Message))
 			if d.Hint != "" {
-				fmt.Printf("    %s %s\n", c(dimWht, "~"), c(dimWht, d.Hint))
+				fmt.Printf("    %s %s\n", c(dimWht, "~"), c(dimWht, terminalSafe(d.Hint)))
 			}
 		}
 	}
@@ -135,7 +135,7 @@ func PrintText(r *model.VdexReport) {
 	if r == nil {
 		return
 	}
-	fmt.Printf("file: %s\nsize: %d bytes\n", r.File, r.Size)
+	fmt.Printf("file: %s\nsize: %d bytes\n", terminalSafe(r.File), r.Size)
 	fmt.Printf("vdex magic=%q version=%q sections=%d\n", r.Header.Magic, r.Header.Version, r.Header.NumSections)
 	if r.Meanings != nil {
 		PrintTextMeanings(r.Meanings)
@@ -164,7 +164,7 @@ func PrintText(r *model.VdexReport) {
 		if len(d.Classes) > 0 {
 			fmt.Printf("     class preview: ")
 			for _, c := range d.Classes {
-				fmt.Printf("%s ", c)
+				fmt.Printf("%s ", terminalSafe(c))
 			}
 			if d.ClassDefs > uint32(len(d.Classes)) {
 				fmt.Printf("...")
@@ -179,7 +179,8 @@ func PrintText(r *model.VdexReport) {
 			fmt.Printf("  [dex %d] verified=%d unverified=%d pairs=%d extra_strings=%d\n",
 				d.DexIndex, d.VerifiedClasses, d.UnverifiedClasses, d.AssignabilityPairs, d.ExtraStringCount)
 			for _, p := range d.FirstPairs {
-				fmt.Printf("    class %d: %s(%d) -> %s(%d)\n", p.ClassDefIndex, p.Dest, p.DestID, p.Src, p.SrcID)
+				fmt.Printf("    class %d: %s(%d) -> %s(%d)\n",
+					p.ClassDefIndex, terminalSafe(p.Dest), p.DestID, terminalSafe(p.Src), p.SrcID)
 			}
 		}
 	}
@@ -190,10 +191,11 @@ func PrintText(r *model.VdexReport) {
 			fmt.Printf("  [dex %d] raw=%d buckets=%d entries=%d non_empty=%d max_chain=%d avg_chain=%.2f\n",
 				d.DexIndex, d.RawSize, d.BucketCount, d.EntryCount, d.NonEmptyBuckets, d.MaxChainLen, d.AvgChainLen)
 			for _, s := range d.Samples {
-				fmt.Printf("    bucket=%d class=%d desc=%s next=%d hashbits=%d\n", s.Bucket, s.ClassDef, s.Descriptor, s.NextDelta, s.HashBits)
+				fmt.Printf("    bucket=%d class=%d desc=%s next=%d hashbits=%d\n",
+					s.Bucket, s.ClassDef, terminalSafe(s.Descriptor), s.NextDelta, s.HashBits)
 			}
 			for _, w := range d.Warnings {
-				fmt.Printf("    %s %s\n", c(yellow, "!"), w)
+				fmt.Printf("    %s %s\n", c(yellow, "!"), terminalSafe(w))
 			}
 		}
 	}
@@ -220,11 +222,11 @@ func PrintText(r *model.VdexReport) {
 	if len(r.Errors) > 0 {
 		fmt.Printf("%s\n", c(boldRed, fmt.Sprintf("errors (%d):", len(r.Errors))))
 		for _, e := range r.Errors {
-			fmt.Printf("  %s %s\n", c(red, "!"), e)
+			fmt.Printf("  %s %s\n", c(red, "!"), terminalSafe(e))
 		}
 		for _, d := range r.Diagnostics {
 			if d.Severity == model.SeverityError && d.Hint != "" {
-				fmt.Printf("    %s %s\n", c(dimWht, "~"), c(dimWht, d.Hint))
+				fmt.Printf("    %s %s\n", c(dimWht, "~"), c(dimWht, terminalSafe(d.Hint)))
 			}
 		}
 	}

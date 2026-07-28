@@ -45,6 +45,7 @@ func TestIsLegacyVersion(t *testing.T) {
 	assert.False(t, IsLegacyVersion("027"))
 	assert.False(t, IsLegacyVersion("020"))
 	assert.False(t, IsLegacyVersion("028"))
+	assert.False(t, IsLegacyVersion("021x"))
 }
 
 func TestParseLegacyHeader(t *testing.T) {
@@ -141,6 +142,33 @@ func TestParseLegacy_WithMeanings(t *testing.T) {
 
 	report, _, _ := ParseVdexLegacy(tmpFile, true)
 	assert.NotNil(t, report.Meanings)
+}
+
+func TestParseLegacy_SkipsDexSharedDataBeforeVerifier(t *testing.T) {
+	raw := buildLegacyVdex("026", 1, 8)
+	const (
+		dexHeaderOffset = legacyHeaderSize + 4
+		verifierOffset  = dexHeaderOffset + dexSectionHeaderSize
+	)
+	binary.LittleEndian.PutUint32(raw[dexHeaderOffset+4:], 4)
+	withShared := make([]byte, 0, len(raw)+4)
+	withShared = append(withShared, raw[:verifierOffset]...)
+	withShared = append(withShared, 0xaa, 0xbb, 0xcc, 0xdd)
+	withShared = append(withShared, raw[verifierOffset:]...)
+
+	report, _, err := ParseVdexLegacyBytes(withShared, false)
+
+	require.NoError(t, err)
+	var verifier *model.VdexSection
+	for i := range report.Sections {
+		if report.Sections[i].Kind == model.SectionVerifierDeps {
+			verifier = &report.Sections[i]
+			break
+		}
+	}
+	require.NotNil(t, verifier)
+	assert.Equal(t, uint32(verifierOffset+4), verifier.Offset)
+	assert.Equal(t, uint32(8), verifier.Size)
 }
 
 func TestParseLegacy_WarnsAboutLimitedSupport(t *testing.T) {

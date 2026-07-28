@@ -35,21 +35,24 @@ Supported formats:
   vdexcli parse --format sections app.vdex | awk -F'\t' '$4 > 0'
   vdexcli parse --format coverage app.vdex
   vdexcli parse --format jsonl app.vdex >> parse.log
-  vdexcli parse --strict --strict-warn "checksum,version" app.vdex
-  vdexcli parse --extract-dex ./out app.vdex`,
-	Args: cobra.MaximumNArgs(1),
-	PreRunE: func(cmd *cobra.Command, args []string) error {
-		if _, err := resolveInputPath(cmd, args); err != nil {
-			return err
-		}
-		g := getGlobalOpts(cmd)
-		return presenter.ValidateFormat(g.Format)
-	},
-	RunE: runParse,
+	vdexcli parse --strict --strict-warn "checksum,version" app.vdex
+	vdexcli parse --extract-dex ./out app.vdex`,
+	Args:    cobra.MaximumNArgs(1),
+	PreRunE: validateParseInputAndFormat,
+	RunE:    runParse,
 }
 
 func init() {
 	rootCmd.RunE = runParse
+	rootCmd.PreRunE = validateParseInputAndFormat
+}
+
+func validateParseInputAndFormat(cmd *cobra.Command, args []string) error {
+	if _, err := resolveInputPath(cmd, args); err != nil {
+		return err
+	}
+	g := getGlobalOpts(cmd)
+	return presenter.ValidateFormat(g.Format)
 }
 
 func runParse(cmd *cobra.Command, args []string) error {
@@ -61,9 +64,28 @@ func runParse(cmd *cobra.Command, args []string) error {
 
 	report, raw, err := parser.ParseVdex(path, p.Meanings)
 	parseErr := err
+	if report == nil {
+		return parseErr
+	}
+
+	report.WarningsByCategory = presenter.GroupWarnings(report.Warnings)
+
+	strictMatched := applyStrict(cmd, report)
+	if len(strictMatched) > 0 {
+		if err := renderParseOutput(cmd, report); err != nil {
+			return err
+		}
+		return fmt.Errorf("strict mode: %d matching warning(s): %v", len(strictMatched), strictMatched)
+	}
+	if parseErr != nil {
+		if err := renderParseOutput(cmd, report); err != nil {
+			return err
+		}
+		return parseErr
+	}
 
 	var extractErr error
-	if report != nil && p.ExtractDir != "" {
+	if p.ExtractDir != "" {
 		opts := extractor.Options{
 			NameTemplate:    p.ExtractTmpl,
 			ContinueOnError: p.ExtractCont,
@@ -74,26 +96,14 @@ func runParse(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(os.Stderr, "extract error: %v\n", e)
 		}
 		report.Warnings = append(report.Warnings, res.Warnings...)
+		report.WarningsByCategory = presenter.GroupWarnings(report.Warnings)
 		if resolvedFormat(cmd) == FormatText {
 			fmt.Printf("extract summary: success=%d failed=%d\n", res.Extracted, res.Failed)
 		}
 	}
 
-	if report != nil {
-		report.WarningsByCategory = presenter.GroupWarnings(report.Warnings)
-	}
-
-	strictMatched := applyStrict(cmd, report)
-
 	if err := renderParseOutput(cmd, report); err != nil {
 		return err
-	}
-
-	if len(strictMatched) > 0 {
-		return fmt.Errorf("strict mode: %d matching warning(s): %v", len(strictMatched), strictMatched)
-	}
-	if parseErr != nil {
-		return parseErr
 	}
 	return extractErr
 }

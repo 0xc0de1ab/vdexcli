@@ -10,26 +10,36 @@ import (
 // ParseStrings reads the string_ids table and resolves each entry to its
 // modified UTF-8 value. Returns both an ordered slice and an offset→string map
 // used by the type lookup table.
-func ParseStrings(raw []byte, stringCount int, stringIdOff int) ([]string, map[uint32]string, error) {
+func ParseStrings(raw []byte, stringCount uint32, stringIdOff uint32) ([]string, map[uint32]string, error) {
 	if stringCount == 0 {
 		return []string{}, map[uint32]string{}, nil
 	}
-	if stringIdOff < 0 || stringIdOff+stringCount*4 > len(raw) {
+	tableEnd := uint64(stringIdOff) + uint64(stringCount)*4
+	if tableEnd > uint64(len(raw)) {
 		return nil, nil, fmt.Errorf("dex: string_ids table out of range (off=%#x count=%d, dex size=%d)", stringIdOff, stringCount, len(raw))
 	}
-	out := make([]string, stringCount)
-	offsetMap := make(map[uint32]string, stringCount)
-	for i := 0; i < stringCount; i++ {
-		off := int(binutil.ReadU32(raw, stringIdOff+i*4))
-		if off < 0 || off >= len(raw) {
-			return out, offsetMap, fmt.Errorf("string_id[%d] points to invalid offset %#x", i, off)
+	count := int(stringCount)
+	tableOffset := int(stringIdOff)
+	out := make([]string, count)
+	offsetMap := make(map[uint32]string, count)
+	decoded := make(map[uint32]string)
+	for i := 0; i < count; i++ {
+		stringOffset := binutil.ReadU32(raw, tableOffset+i*4)
+		if uint64(stringOffset) >= uint64(len(raw)) {
+			return out, offsetMap, fmt.Errorf("string_id[%d] points to invalid offset %#x", i, stringOffset)
 		}
+		if cached, ok := decoded[stringOffset]; ok {
+			out[i] = cached
+			continue
+		}
+		off := int(stringOffset)
 		s, _, err := parseModifiedUtf8(raw, off)
 		if err != nil {
 			return out, offsetMap, fmt.Errorf("string_id[%d]: %w", i, err)
 		}
 		out[i] = s
-		offsetMap[uint32(off)] = s
+		offsetMap[stringOffset] = s
+		decoded[stringOffset] = s
 	}
 	return out, offsetMap, nil
 }

@@ -620,9 +620,11 @@ vdexcli/
 │       └── color_wasm.go            # WASM 빌드용 no-op 오버라이드
 ├── .github/
 │   └── workflows/
-│       ├── ci.yml                   # [01] CI Build (7개 job)
-│       ├── release.yml              # 릴리즈 파이프라인
-│       └── test-integration.yml     # 166개 파일 VDEX 통합 테스트
+│       ├── ci.yml                   # [01] CI 빌드 및 필수 gate
+│       ├── bump-up.yml              # [02] 버전 태그 생성
+│       ├── release.yml              # [03] 릴리즈 파이프라인
+│       ├── pages-deploy.yml         # [04] Web/WASM Pages 배포
+│       └── test-integration.yml     # [05] 166개 파일 통합 테스트
 ├── docs/
 │   ├── architecture.md              # 패키지 다이어그램 + 설계 결정
 │   └── vdex-format.md              # VDEX v027 바이너리 포맷 레퍼런스
@@ -635,9 +637,9 @@ vdexcli/
 
 ## CI / 워크플로
 
-### `[01] CI Build` — `ci.yml`
+### `[01] CI Build and test` — `ci.yml`
 
-트리거: **`main` 브랜치 push** 및 **수동 실행** (`workflow_dispatch`).
+트리거: **`main` 브랜치 push**, **`main` 대상 pull request**, **수동 실행** (`workflow_dispatch`).
 
 | Job | 검사 내용 |
 |-----|-----------|
@@ -648,15 +650,24 @@ vdexcli/
 | `test` | `go test -v -count=1 ./...` · `pkg/vdex/` 포함 커버리지 ≥ 85% |
 | `build` | 5 플랫폼 매트릭스 (linux/darwin/windows × amd64/arm64) + linux/amd64 스모크 테스트 |
 | `build-wasm` | `GOOS=js GOARCH=wasm` 빌드 · `vdex.wasm` 아티팩트 업로드 |
+| `[01] Required` | 위 필수 CI job 전체의 성공을 집계하며 branch protection check로 사용 |
 
-**수동 실행 방법:** GitHub → Actions → `[01] CI Build` → **Run workflow** 클릭
+**수동 실행 방법:** GitHub → Actions → `[01] CI Build and test` → **Run workflow** 클릭
 
-### `Release` — `release.yml`
+### `[02] Bump up` — `bump-up.yml`
+
+`vMAJOR.MINOR.PATCH` 버전을 검증하고 보호된 최신 `main`에서 태그를 생성하여 릴리즈 파이프라인을 시작하는 수동 workflow입니다.
+
+### `[03] Release` — `release.yml`
 
 트리거: `v*.*.*` 버전 태그 또는 `workflow_dispatch`.
 결과물: 플랫폼별 아카이브 + SHA256 체크섬 + GitHub Release 생성.
 
-### `test-integration.yml`
+### `[04] Build pages and deploy` — `pages-deploy.yml`
+
+Go WASM 엔진과 Node 24 웹 앱을 빌드하고 WASM bridge smoke test를 실행한 뒤, 버전이 일치하는 엔진/runtime 쌍을 GitHub Pages에 배포합니다.
+
+### `[05] Integration tests` — `test-integration.yml`
 
 트리거: 주간(월요일 00:00 UTC), main push, `workflow_dispatch`.
 실행: **Android 16 VDEX 파일 166개**를 전체 파서 파이프라인으로 처리.

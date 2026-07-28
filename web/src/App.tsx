@@ -7,6 +7,7 @@ import {
   Loader2,
   RotateCcw,
   UploadCloud,
+  X,
 } from 'lucide-react';
 
 import VdexTreeGrid from './VdexTreeGrid';
@@ -50,6 +51,18 @@ interface PendingAnalysis {
   reject: (reason: Error) => void;
 }
 
+const MAX_BROWSER_FILE_BYTES = 128 * 1024 * 1024;
+const MAX_BROWSER_FILE_LABEL = '128 MiB';
+const SUPPORTED_VDEX_VERSION = '027';
+const ENGINE_VERSION = import.meta.env.VITE_ENGINE_VERSION ?? '';
+
+class AnalysisCanceledError extends Error {
+  constructor(message = 'VDEX analysis was canceled') {
+    super(message);
+    this.name = 'AnalysisCanceledError';
+  }
+}
+
 const isVdexError = (value: unknown): value is VdexError =>
   typeof value === 'object' && value !== null &&
   'error' in value && typeof (value as VdexError).error === 'string';
@@ -81,16 +94,55 @@ const formatDuration = (milliseconds: number): string => {
   return `${(milliseconds / 1000).toFixed(1)} s`;
 };
 
-const readFile = (file: File, onProgress: (loaded: number, total: number) => void) =>
+const validateFileHeader = async (file: File): Promise<void> => {
+  if (file.size > MAX_BROWSER_FILE_BYTES) {
+    throw new Error(
+      `Selected file is ${file.size.toLocaleString()} bytes. The browser safety limit is ${MAX_BROWSER_FILE_LABEL} (${MAX_BROWSER_FILE_BYTES.toLocaleString()} bytes). Use the CLI for larger VDEX files.`,
+    );
+  }
+  if (file.size < 12) throw new Error('Not a VDEX file: the header is shorter than 12 bytes');
+
+  const header = new Uint8Array(await file.slice(0, 12).arrayBuffer());
+  const magic = String.fromCharCode(...header.subarray(0, 4));
+  if (magic !== 'vdex') {
+    throw new Error('Not a VDEX file: expected the "vdex" magic signature');
+  }
+  let versionEnd = 8;
+  while (versionEnd > 4 && header[versionEnd - 1] === 0) versionEnd -= 1;
+  const version = String.fromCharCode(...header.subarray(4, versionEnd));
+  if (version !== SUPPORTED_VDEX_VERSION) {
+    const displayVersion = version || 'empty';
+    throw new Error(
+      `Unsupported VDEX version "${displayVersion}". The browser analyzer supports v${SUPPORTED_VDEX_VERSION}.`,
+    );
+  }
+};
+
+const readFile = (
+  file: File,
+  onProgress: (loaded: number, total: number) => void,
+  setActiveReader: (reader: FileReader | null) => void,
+) =>
   new Promise<ArrayBuffer>((resolve, reject) => {
     const reader = new FileReader();
+    const finish = (callback: () => void) => {
+      setActiveReader(null);
+      callback();
+    };
+    setActiveReader(reader);
     reader.onprogress = (event) => onProgress(event.loaded, event.total || file.size);
     reader.onload = () => {
-      if (reader.result instanceof ArrayBuffer) resolve(reader.result);
-      else reject(new Error('Failed to read the selected file'));
+      finish(() => {
+        if (reader.result instanceof ArrayBuffer) resolve(reader.result);
+        else reject(new Error('Failed to read the selected file'));
+      });
     };
-    reader.onerror = () => reject(reader.error ?? new Error('Failed to read the selected file'));
-    reader.onabort = () => reject(new Error('File reading was canceled'));
+    reader.onerror = () => {
+      finish(() => reject(reader.error ?? new Error('Failed to read the selected file')));
+    };
+    reader.onabort = () => {
+      finish(() => reject(new AnalysisCanceledError()));
+    };
     reader.readAsArrayBuffer(file);
   });
 
@@ -107,20 +159,26 @@ export default function App() {
   const [elapsedMs, setElapsedMs] = useState(0);
   const [analysisMs, setAnalysisMs] = useState<number | null>(null);
   const [treeMs, setTreeMs] = useState<number | null>(null);
+  const [workerGeneration, setWorkerGeneration] = useState(0);
 
   const workerRef = useRef<Worker | null>(null);
+  const activeReaderRef = useRef<FileReader | null>(null);
   const pendingRef = useRef<PendingAnalysis | null>(null);
   const pendingTreeRef = useRef(new Map<number, PendingTreeRequest>());
   const analysisIdRef = useRef<number | null>(null);
   const nextRequestId = useRef(1);
   const processingStartedAt = useRef<number | null>(null);
+  const processingRef = useRef(false);
+  const operationIdRef = useRef(0);
 
   useEffect(() => {
     const worker = new Worker(new URL('./vdex.worker.ts', import.meta.url), { type: 'classic' });
     const pendingTreeRequests = pendingTreeRef.current;
     workerRef.current = worker;
+    setEngineStatus('loading');
 
     worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
+      if (workerRef.current !== worker) return;
       const message = event.data;
       if (message.type === 'ready') {
         setEngineStatus('ready');
@@ -163,13 +221,15 @@ export default function App() {
         const treePending = pendingTreeRequests.get(message.requestId);
         pendingTreeRequests.delete(message.requestId);
         treePending?.reject(new Error(message.message));
-      } else {
+      } else if (message.requestId === undefined) {
         setEngineStatus('error');
         setError(message.message);
       }
     };
 
     worker.onerror = (event) => {
+      if (workerRef.current !== worker) return;
+      event.preventDefault();
       const workerError = new Error(event.message || 'WASM worker failed');
       const pending = pendingRef.current;
       pendingRef.current = null;
@@ -180,18 +240,40 @@ export default function App() {
       setError(workerError.message);
     };
 
-    const initMessage: WorkerRequest = { type: 'init', baseUrl: import.meta.env.BASE_URL };
+    worker.onmessageerror = () => {
+      if (workerRef.current !== worker) return;
+      const workerError = new Error('WASM worker returned an unreadable message');
+      const pending = pendingRef.current;
+      pendingRef.current = null;
+      pending?.reject(workerError);
+      for (const treePending of pendingTreeRequests.values()) treePending.reject(workerError);
+      pendingTreeRequests.clear();
+      setEngineStatus('error');
+      setError(workerError.message);
+    };
+
+    const initMessage: WorkerRequest = {
+      type: 'init',
+      baseUrl: import.meta.env.BASE_URL,
+      engineVersion: ENGINE_VERSION,
+    };
     worker.postMessage(initMessage);
 
     return () => {
+      worker.onmessage = null;
+      worker.onerror = null;
+      worker.onmessageerror = null;
       worker.terminate();
+      const pending = pendingRef.current;
+      pendingRef.current = null;
+      pending?.reject(new AnalysisCanceledError('VDEX analysis worker was restarted'));
       for (const pending of pendingTreeRequests.values()) {
         pending.reject(new Error('VDEX analysis worker was closed'));
       }
       pendingTreeRequests.clear();
       if (workerRef.current === worker) workerRef.current = null;
     };
-  }, []);
+  }, [workerGeneration]);
 
   useEffect(() => {
     if (!isProcessing || processingStartedAt.current === null) return;
@@ -211,7 +293,11 @@ export default function App() {
       setError('VDEX analysis engine is not ready');
       return;
     }
+    if (processingRef.current) return;
 
+    const operationId = operationIdRef.current + 1;
+    operationIdRef.current = operationId;
+    processingRef.current = true;
     setFileName(file.name);
     setFileSize(file.size);
     setIsProcessing(true);
@@ -226,18 +312,29 @@ export default function App() {
     }
     pendingTreeRef.current.clear();
     setElapsedMs(0);
-    setProgress({ label: 'Reading file', detail: `0 B of ${formatBytes(file.size)}`, percent: 0 });
+    setProgress({ label: 'Checking VDEX header', detail: 'Reading the first 12 bytes' });
     processingStartedAt.current = performance.now();
 
     try {
-      const buffer = await readFile(file, (loaded, total) => {
-        const percent = total > 0 ? Math.min(100, Math.round((loaded / total) * 100)) : undefined;
-        setProgress({
-          label: 'Reading file',
-          detail: `${formatBytes(loaded)} of ${formatBytes(total)}`,
-          percent,
-        });
-      });
+      await validateFileHeader(file);
+      if (operationId !== operationIdRef.current) throw new AnalysisCanceledError();
+      setProgress({ label: 'Reading file', detail: `0 B of ${formatBytes(file.size)}`, percent: 0 });
+      const buffer = await readFile(
+        file,
+        (loaded, total) => {
+          if (operationId !== operationIdRef.current) return;
+          const percent = total > 0 ? Math.min(100, Math.round((loaded / total) * 100)) : undefined;
+          setProgress({
+            label: 'Reading file',
+            detail: `${formatBytes(loaded)} of ${formatBytes(total)}`,
+            percent,
+          });
+        },
+        (reader) => {
+          if (operationId === operationIdRef.current) activeReaderRef.current = reader;
+        },
+      );
+      if (operationId !== operationIdRef.current) throw new AnalysisCanceledError();
 
       const requestId = nextRequestId.current++;
       const response = await new Promise<AnalysisResponse>((resolve, reject) => {
@@ -246,6 +343,7 @@ export default function App() {
         worker.postMessage(analyzeMessage, [buffer]);
       });
 
+      if (operationId !== operationIdRef.current) throw new AnalysisCanceledError();
       if (isVdexError(response.result)) throw new Error(response.result.error);
       const structure = normalizeStructureAnalysis(response.result);
       if (!structure) throw new Error('WASM returned an invalid analysis result');
@@ -264,15 +362,51 @@ export default function App() {
       setSourceBytes(new Uint8Array(response.sourceBuffer));
       setData(structure);
     } catch (caught) {
-      console.error(caught);
-      setError(caught instanceof Error ? caught.message : 'Failed to process file');
-    } finally {
-      if (processingStartedAt.current !== null) {
-        setElapsedMs(performance.now() - processingStartedAt.current);
+      if (!(caught instanceof AnalysisCanceledError) && operationId === operationIdRef.current) {
+        console.error(caught);
+        setError(caught instanceof Error ? caught.message : 'Failed to process file');
       }
-      processingStartedAt.current = null;
-      setIsProcessing(false);
+    } finally {
+      if (operationId === operationIdRef.current) {
+        if (processingStartedAt.current !== null) {
+          setElapsedMs(performance.now() - processingStartedAt.current);
+        }
+        activeReaderRef.current = null;
+        processingStartedAt.current = null;
+        processingRef.current = false;
+        setIsProcessing(false);
+      }
     }
+  };
+
+  const cancelAnalysis = () => {
+    if (!processingRef.current) return;
+    operationIdRef.current += 1;
+    processingRef.current = false;
+    processingStartedAt.current = null;
+    activeReaderRef.current?.abort();
+    activeReaderRef.current = null;
+
+    const canceled = new AnalysisCanceledError();
+    const pending = pendingRef.current;
+    pendingRef.current = null;
+    pending?.reject(canceled);
+    for (const treePending of pendingTreeRef.current.values()) treePending.reject(canceled);
+    pendingTreeRef.current.clear();
+
+    workerRef.current?.terminate();
+    workerRef.current = null;
+    analysisIdRef.current = null;
+    setIsProcessing(false);
+    setProgress(null);
+    setFileName('');
+    setFileSize(0);
+    setElapsedMs(0);
+    setAnalysisMs(null);
+    setTreeMs(null);
+    setError(null);
+    setEngineStatus('loading');
+    setWorkerGeneration((generation) => generation + 1);
   };
 
   const onDrop = (event: React.DragEvent) => {
@@ -288,6 +422,11 @@ export default function App() {
   };
 
   const reset = () => {
+    const activeAnalysisId = analysisIdRef.current;
+    if (activeAnalysisId !== null) {
+      const disposeMessage: WorkerRequest = { type: 'dispose', analysisId: activeAnalysisId };
+      workerRef.current?.postMessage(disposeMessage);
+    }
     setData(null);
     setSourceBytes(null);
     setError(null);
@@ -386,27 +525,34 @@ export default function App() {
               <input
                 type="file"
                 className="visually-hidden"
-                accept=".vdex,.dm,application/octet-stream"
+                accept=".vdex,application/octet-stream"
                 onChange={onFileInput}
               />
               <UploadCloud size={30} />
               <span>{isDragging ? 'Drop the file here' : 'Drop a .vdex file or choose one'}</span>
-              <small>VDEX and DM binary files</small>
+              <small>VDEX v{SUPPORTED_VDEX_VERSION} files up to {MAX_BROWSER_FILE_LABEL}</small>
             </label>
           </section>
         )}
 
         {isProcessing && progress && (
-          <section className="progress-panel" aria-live="polite">
+          <section className="progress-panel">
             <div className="progress-header">
               <div className="progress-status">
                 <Loader2 size={24} className="spinner" />
-                <div>
+                <div aria-live="polite" aria-atomic="true">
                   <strong>{progress.label}</strong>
                   <span>{fileName} · {progress.detail}</span>
                 </div>
               </div>
-              <span className="elapsed-time"><Clock3 size={16} /> {formatDuration(elapsedMs)}</span>
+              <div className="progress-actions">
+                <span className="elapsed-time" aria-hidden="true">
+                  <Clock3 size={16} /> {formatDuration(elapsedMs)}
+                </span>
+                <button type="button" className="secondary-button progress-cancel" onClick={cancelAnalysis}>
+                  <X size={16} /> Cancel
+                </button>
+              </div>
             </div>
             <div
               className="progress-track"

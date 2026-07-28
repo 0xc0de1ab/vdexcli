@@ -63,8 +63,8 @@ func WriteSummary(w io.Writer, r *model.VdexReport) error {
 	}
 
 	out.printf("status=%s file=%s size=%d version=%s sections=%d checksums=%d dexes=%d warnings=%d errors=%d coverage=%.1f%% gaps=%d\n",
-		status, r.File, r.Size,
-		r.Header.Version, r.Header.NumSections,
+		status, terminalSafe(r.File), r.Size,
+		terminalSafe(r.Header.Version), r.Header.NumSections,
 		len(r.Checksums), len(r.Dexes),
 		len(r.Warnings), len(r.Errors),
 		covPct, gaps)
@@ -79,7 +79,7 @@ func WriteSections(w io.Writer, r *model.VdexReport) error {
 	out := outputWriter{dst: w}
 	out.println("kind\tname\toffset\tsize")
 	for _, s := range r.Sections {
-		out.printf("%d\t%s\t%d\t%d\n", s.Kind, s.Name, s.Offset, s.Size)
+		out.printf("%d\t%s\t%d\t%d\n", s.Kind, terminalSafe(s.Name), s.Offset, s.Size)
 	}
 	return out.err
 }
@@ -93,15 +93,15 @@ func WriteCoverage(w io.Writer, r *model.VdexReport) error {
 	}
 	c := r.Coverage
 	out.printf("file=%s size=%d parsed=%d unparsed=%d coverage=%.2f%%\n",
-		r.File, c.FileSize, c.ParsedBytes, c.UnparsedBytes, c.CoveragePercent)
+		terminalSafe(r.File), c.FileSize, c.ParsedBytes, c.UnparsedBytes, c.CoveragePercent)
 
 	for _, rng := range c.Ranges {
-		out.printf("  %#08x  %6d  %s\n", rng.Offset, rng.Size, rng.Label)
+		out.printf("  %#08x  %6d  %s\n", rng.Offset, rng.Size, terminalSafe(rng.Label))
 	}
 	if len(c.Gaps) > 0 {
 		out.println("gaps:")
 		for _, g := range c.Gaps {
-			out.printf("  %#08x  %6d  %s\n", g.Offset, g.Size, g.Label)
+			out.printf("  %#08x  %6d  %s\n", g.Offset, g.Size, terminalSafe(g.Label))
 		}
 	}
 	return out.err
@@ -111,7 +111,7 @@ func WriteCoverage(w io.Writer, r *model.VdexReport) error {
 func WriteModifySummary(w io.Writer, s model.ModifySummary) error {
 	out := outputWriter{dst: w}
 	out.printf("status=%s mode=%s input=%s output=%s dry_run=%v classes_total=%d classes_modified=%d classes_unchanged=%d change=%.2f%% warnings=%d errors=%d\n",
-		s.Status, s.Mode, s.InputFile, s.OutputFile, s.DryRun,
+		terminalSafe(s.Status), terminalSafe(s.Mode), terminalSafe(s.InputFile), terminalSafe(s.OutputFile), s.DryRun,
 		s.TotalClasses, s.ModifiedClasses, s.UnmodifiedClasses,
 		s.ClassChangePercent,
 		len(s.Warnings), len(s.Errors))
@@ -123,7 +123,7 @@ func WriteExtractSummary(w io.Writer, s model.ExtractSummary) error {
 	out := outputWriter{dst: w}
 	out.printf("status=%s file=%s dir=%s extracted=%d failed=%d warnings=%d errors=%d\n",
 		lo.Ternary(len(s.Errors) > 0, "error", "ok"),
-		s.File, s.ExtractDir, s.Extracted, s.Failed,
+		terminalSafe(s.File), terminalSafe(s.ExtractDir), s.Extracted, s.Failed,
 		len(s.Warnings), len(s.Errors))
 	return out.err
 }
@@ -136,7 +136,8 @@ func WriteTable(w io.Writer, r *model.VdexReport) error {
 	}
 	out := outputWriter{dst: w}
 
-	out.printf("%s\n", c(bold, fmt.Sprintf("VDEX %s  v%s  %d bytes", r.Header.Magic, r.Header.Version, r.Size)))
+	out.printf("%s\n", c(bold, fmt.Sprintf("VDEX %s  v%s  %d bytes",
+		terminalSafe(r.Header.Magic), terminalSafe(r.Header.Version), r.Size)))
 	out.println()
 
 	// Section table
@@ -149,7 +150,7 @@ func WriteTable(w io.Writer, r *model.VdexReport) error {
 		if s.Size == 0 {
 			sizeStr = c(dim, "0")
 		}
-		out.printf("  %4d  %-28s  %#10x  %10s\n", s.Kind, s.Name, s.Offset, sizeStr)
+		out.printf("  %4d  %-28s  %#10x  %10s\n", s.Kind, terminalSafe(s.Name), s.Offset, sizeStr)
 	}
 	out.println()
 
@@ -166,13 +167,13 @@ func WriteTable(w io.Writer, r *model.VdexReport) error {
 	if len(r.Dexes) > 0 {
 		out.printf("%s %d\n", c(bold, "dex files:"), len(r.Dexes))
 		for _, d := range r.Dexes {
-			magic := strings.ReplaceAll(d.Magic, "\n", "\\n")
-			sigPreview := d.Signature
+			magic := terminalSafe(d.Magic)
+			sigPreview := terminalSafe(d.Signature)
 			if len(sigPreview) > 20 {
 				sigPreview = sigPreview[:20] + "..."
 			}
 			out.printf("  [%d] %s  off=%#x  size=%d  endian=%s\n",
-				d.Index, c(boldCyn, magic+d.Version), d.Offset, d.Size, d.Endian)
+				d.Index, c(boldCyn, magic+terminalSafe(d.Version)), d.Offset, d.Size, terminalSafe(d.Endian))
 			out.printf("      sha1=%s  checksum=%s\n",
 				c(dim, sigPreview), c(cyan, fmt.Sprintf("%#x", d.ChecksumId)))
 			out.printf("      strings=%d types=%d protos=%d fields=%d methods=%d %s=%d\n",
@@ -211,7 +212,8 @@ func WriteTable(w io.Writer, r *model.VdexReport) error {
 		out.printf("%s %d/%d bytes (%s)\n", c(bold, "coverage:"), cov.ParsedBytes, cov.FileSize, pctStr)
 		if len(cov.Gaps) > 0 {
 			for _, g := range cov.Gaps {
-				out.printf("  %s %#x..%#x  %d bytes  %s\n", c(yellow, "gap"), g.Offset, g.Offset+g.Size, g.Size, c(dim, g.Label))
+				out.printf("  %s %#x..%#x  %d bytes  %s\n",
+					c(yellow, "gap"), g.Offset, g.Offset+g.Size, g.Size, c(dim, terminalSafe(g.Label)))
 			}
 		}
 		out.println()
@@ -221,7 +223,7 @@ func WriteTable(w io.Writer, r *model.VdexReport) error {
 	if len(r.Warnings) > 0 {
 		out.printf("%s %d\n", c(boldYlw, "warnings:"), len(r.Warnings))
 		for _, w2 := range r.Warnings {
-			out.printf("  %s %s\n", c(yellow, "!"), w2)
+			out.printf("  %s %s\n", c(yellow, "!"), terminalSafe(w2))
 		}
 		out.println()
 	}
@@ -229,7 +231,7 @@ func WriteTable(w io.Writer, r *model.VdexReport) error {
 	if len(r.Errors) > 0 {
 		out.printf("%s %d\n", c(boldRed, "errors:"), len(r.Errors))
 		for _, e := range r.Errors {
-			out.printf("  %s %s\n", c(red, "!"), e)
+			out.printf("  %s %s\n", c(red, "!"), terminalSafe(e))
 		}
 	}
 	return out.err

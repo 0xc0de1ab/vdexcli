@@ -2,6 +2,7 @@ package parser
 
 import (
 	"encoding/binary"
+	"math"
 	"strings"
 	"testing"
 
@@ -354,6 +355,74 @@ func TestParseVerifierDex_InvalidLEB128(t *testing.T) {
 		}
 	}
 	assert.True(t, hasLEB, "should detect invalid LEB128")
+}
+
+func TestParseVerifierDex_SourceULEBDoesNotCrossSetBoundary(t *testing.T) {
+	raw := make([]byte, 20)
+	binary.LittleEndian.PutUint32(raw[0:], 4)
+	binary.LittleEndian.PutUint32(raw[4:], 12)
+	binary.LittleEndian.PutUint32(raw[8:], 13)
+	raw[12] = 5 // destination only; source would start outside [12,13)
+	dexes := []*model.DexContext{{Rep: model.DexReport{ClassDefs: 1}}}
+
+	report, diags := ParseVerifierSection(
+		raw,
+		model.VdexSection{Size: uint32(len(raw))},
+		dexes,
+		1,
+	)
+
+	require.Len(t, report.Dexes, 1)
+	assert.Zero(t, report.Dexes[0].AssignabilityPairs)
+	require.NotEmpty(t, diags)
+	assert.Equal(t, model.WarnVerifierInvalidLEB128, diags[0].Code)
+	assert.Contains(t, diags[0].Message, "source")
+}
+
+func TestParseVerifierSection_DexBlockCannotConsumeNextBlock(t *testing.T) {
+	raw := make([]byte, 32)
+	binary.LittleEndian.PutUint32(raw[0:], 8)
+	binary.LittleEndian.PutUint32(raw[4:], 20)
+
+	binary.LittleEndian.PutUint32(raw[8:], 16)
+	binary.LittleEndian.PutUint32(raw[12:], 24) // crosses block 0 end at 20
+
+	binary.LittleEndian.PutUint32(raw[20:], 28)
+	binary.LittleEndian.PutUint32(raw[24:], 28)
+	// raw[28:32] is block 1 numStrings=0.
+
+	dexes := []*model.DexContext{
+		{Rep: model.DexReport{ClassDefs: 1}},
+		{Rep: model.DexReport{ClassDefs: 1}},
+	}
+	report, diags := ParseVerifierSection(
+		raw,
+		model.VdexSection{Size: uint32(len(raw))},
+		dexes,
+		2,
+	)
+
+	require.Len(t, report.Dexes, 2)
+	assert.Equal(t, 1, report.Dexes[1].VerifiedClasses)
+	require.NotEmpty(t, diags)
+	assert.Equal(t, model.WarnVerifierMalformedBounds, diags[0].Code)
+}
+
+func TestParseVerifierSection_MaxClassCountDoesNotOverflow(t *testing.T) {
+	raw := make([]byte, 16)
+	binary.LittleEndian.PutUint32(raw[0:], 4)
+	dexes := []*model.DexContext{{Rep: model.DexReport{ClassDefs: math.MaxUint32}}}
+
+	report, diags := ParseVerifierSection(
+		raw,
+		model.VdexSection{Size: uint32(len(raw))},
+		dexes,
+		1,
+	)
+
+	require.Len(t, report.Dexes, 1)
+	require.NotEmpty(t, diags)
+	assert.Equal(t, model.WarnVerifierBlockTruncated, diags[0].Code)
 }
 
 func TestParseVerifierDex_ExtraStringsTruncated(t *testing.T) {
