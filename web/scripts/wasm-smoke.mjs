@@ -77,8 +77,17 @@ try {
     throw new Error('explainStructureJSON must return JSON text');
   }
   const structureJSON = JSON.parse(structureJSONPayload);
-  if (structureJSON.fields.length !== structure.fields.length) {
-    throw new Error('JSON structure field count mismatch');
+  if (structureJSON.field_encoding !== 'columnar-v1') {
+    throw new Error(`unexpected JSON field encoding: ${structureJSON.field_encoding}`);
+  }
+  const structureColumns = Object.values(structureJSON.fields);
+  if (
+    structureColumns.length !== 6 ||
+    structureColumns.some(
+      (column) => !Array.isArray(column) || column.length !== structure.fields.length
+    )
+  ) {
+    throw new Error('JSON structure fields must use six equal-length columns');
   }
 
   console.log(
@@ -87,20 +96,34 @@ try {
   if (fixtureArgument) {
     const fixture = new Uint8Array(await readFile(resolve(fixtureArgument)));
     const startedAt = performance.now();
+    const rssBefore = process.memoryUsage().rss;
     const fixturePayload = globalThis.vdex?.explainStructureJSON(fixture);
+    const rssAfterCall = process.memoryUsage().rss;
     if (typeof fixturePayload !== 'string') {
       throw new Error('WASM fixture JSON API returned a non-string result');
     }
     const fixtureResult = JSON.parse(fixturePayload);
-    if (!fixtureResult || fixtureResult.error || !Array.isArray(fixtureResult.fields)) {
+    const rssAfterParse = process.memoryUsage().rss;
+    if (!fixtureResult || fixtureResult.error || !Array.isArray(fixtureResult.fields?.path)) {
       throw new Error(fixtureResult?.error ?? 'WASM fixture analysis returned no field map');
     }
     if (fixtureResult.total_bytes !== fixture.byteLength) {
       throw new Error('WASM fixture analysis returned a mismatched byte count');
     }
+    const fieldCount = fixtureResult.fields.path.length;
+    const pathChars = fixtureResult.fields.path.reduce((total, path) => total + path.length, 0);
     console.log(
-      `WASM fixture OK: ${fixture.byteLength} bytes, ${fixtureResult.fields.length} fields, `
-      + `${Math.round(performance.now() - startedAt)} ms`,
+      `WASM fixture OK: ${fixture.byteLength} bytes, ${fieldCount} fields, `
+      + `${fixturePayload.length} JSON chars, ${Math.round(performance.now() - startedAt)} ms`,
+    );
+    console.log(
+      `WASM fixture RSS: call +${Math.round((rssAfterCall - rssBefore) / 1048576)} MiB, `
+      + `parse +${Math.round((rssAfterParse - rssAfterCall) / 1048576)} MiB`,
+    );
+    console.log(
+      `WASM fixture dictionaries: ${pathChars} path chars, `
+      + `${fixtureResult.field_descriptions.length} descriptions, `
+      + `${fixtureResult.field_types.length} types`,
     );
   }
   process.exit(0);
