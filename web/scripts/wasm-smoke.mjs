@@ -2,9 +2,9 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const [wasmArgument, runtimeArgument] = process.argv.slice(2);
+const [wasmArgument, runtimeArgument, fixtureArgument] = process.argv.slice(2);
 if (!wasmArgument || !runtimeArgument) {
-  console.error('usage: node scripts/wasm-smoke.mjs <vdex.wasm> <wasm_exec.js>');
+  console.error('usage: node scripts/wasm-smoke.mjs <vdex.wasm> <wasm_exec.js> [fixture.vdex]');
   process.exit(2);
 }
 
@@ -49,7 +49,11 @@ try {
   if (result.dex_previews[0].embedded !== false) throw new Error('checksum-only DEX preview must not be embedded');
   if (result.total_bytes !== 68) throw new Error(`unexpected total_bytes: ${result.total_bytes}`);
 
-  const structure = globalThis.vdex?.explainStructure(input);
+  const structurePayload = globalThis.vdex?.explainStructure(input);
+  if (typeof structurePayload !== 'object') {
+    throw new Error('explainStructure must preserve its object return type');
+  }
+  const structure = structurePayload;
   if (!structure || structure.error) {
     throw new Error(structure?.error ?? 'compact WASM API returned no result');
   }
@@ -68,10 +72,37 @@ try {
   if (compactByteFields.some((field) => 'parsed_value' in field)) {
     throw new Error('compact byte and padding fields must omit parsed_value');
   }
+  const structureJSONPayload = globalThis.vdex?.explainStructureJSON(input);
+  if (typeof structureJSONPayload !== 'string') {
+    throw new Error('explainStructureJSON must return JSON text');
+  }
+  const structureJSON = JSON.parse(structureJSONPayload);
+  if (structureJSON.fields.length !== structure.fields.length) {
+    throw new Error('JSON structure field count mismatch');
+  }
 
   console.log(
     `WASM bridge OK: ${result.fields.length} fields, compact structure excludes raw byte arrays`,
   );
+  if (fixtureArgument) {
+    const fixture = new Uint8Array(await readFile(resolve(fixtureArgument)));
+    const startedAt = performance.now();
+    const fixturePayload = globalThis.vdex?.explainStructureJSON(fixture);
+    if (typeof fixturePayload !== 'string') {
+      throw new Error('WASM fixture JSON API returned a non-string result');
+    }
+    const fixtureResult = JSON.parse(fixturePayload);
+    if (!fixtureResult || fixtureResult.error || !Array.isArray(fixtureResult.fields)) {
+      throw new Error(fixtureResult?.error ?? 'WASM fixture analysis returned no field map');
+    }
+    if (fixtureResult.total_bytes !== fixture.byteLength) {
+      throw new Error('WASM fixture analysis returned a mismatched byte count');
+    }
+    console.log(
+      `WASM fixture OK: ${fixture.byteLength} bytes, ${fixtureResult.fields.length} fields, `
+      + `${Math.round(performance.now() - startedAt)} ms`,
+    );
+  }
   process.exit(0);
 } catch (error) {
   console.error(error);

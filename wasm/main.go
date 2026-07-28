@@ -16,13 +16,16 @@
 //
 //	// Then use the API:
 //	const fieldMap = window.vdex.explain(uint8Array);          // returns JS object
-//	const structure = window.vdex.explainStructure(uint8Array); // compact web DTO
+//	const structure = window.vdex.explainStructure(uint8Array); // compact web DTO object
+//	const json = window.vdex.explainStructureJSON(uint8Array);   // compact JSON text
 //	const report = window.vdex.parse(uint8Array);               // returns JS object
 //	const version = window.vdex.version;                        // string
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"syscall/js"
 
 	"github.com/0xc0de1ab/vdexcli/pkg/vdex"
@@ -37,21 +40,15 @@ type structureField struct {
 	Description string         `json:"description,omitempty"`
 }
 
-type structureMap struct {
-	Fields       []structureField `json:"fields"`
-	TotalBytes   uint32           `json:"total_bytes"`
-	UnmappedGaps []vdex.ByteRange `json:"unmapped_gaps"`
-	DexPreviews  any              `json:"dex_previews"`
-}
-
 func main() {
 	// Register the API namespace on the global object.
 	// All functions are synchronous — JavaScript callers do not need async/await.
 	js.Global().Set("vdex", js.ValueOf(map[string]any{
-		"explain":          js.FuncOf(jsExplain),
-		"explainStructure": js.FuncOf(jsExplainStructure),
-		"parse":            js.FuncOf(jsParse),
-		"version":          js.ValueOf(vdex.Version()),
+		"explain":              js.FuncOf(jsExplain),
+		"explainStructure":     js.FuncOf(jsExplainStructure),
+		"explainStructureJSON": js.FuncOf(jsExplainStructureJSON),
+		"parse":                js.FuncOf(jsParse),
+		"version":              js.ValueOf(vdex.Version()),
 	}))
 
 	// Block forever — the WASM module must remain alive for callbacks to work.
@@ -86,24 +83,52 @@ func jsExplain(_ js.Value, args []js.Value) any {
 	return jsonToJSObject(fm)
 }
 
-// jsExplainStructure returns the field metadata needed by the browser tree.
-// Raw byte arrays stay in the transferred source buffer instead of being
-// expanded into JSON number arrays by the Go-to-JavaScript bridge.
+// jsExplainStructure preserves the public object-returning API.
 func jsExplainStructure(_ js.Value, args []js.Value) any {
+	payload, err := buildStructureJSON(args)
+	if err != nil {
+		return jsErrorObj("explainStructure: " + err.Error())
+	}
+	return js.Global().Get("JSON").Call("parse", string(payload))
+}
+
+// jsExplainStructureJSON returns compact JSON text for the browser worker. Text
+// avoids cloning the complete field slice across the Go-to-JavaScript bridge.
+func jsExplainStructureJSON(_ js.Value, args []js.Value) any {
+	payload, err := buildStructureJSON(args)
+	if err != nil {
+		return jsErrorObj("explainStructureJSON: " + err.Error())
+	}
+	return string(payload)
+}
+
+func buildStructureJSON(args []js.Value) ([]byte, error) {
 	if len(args) < 1 {
-		return jsErrorObj("explainStructure: expected Uint8Array argument")
+		return nil, fmt.Errorf("expected Uint8Array argument")
 	}
 	data, ok := jsUint8ArrayToBytes(args[0])
 	if !ok {
-		return jsErrorObj("explainStructure: argument must be a Uint8Array")
+		return nil, fmt.Errorf("argument must be a Uint8Array")
 	}
 
 	fm, err := vdex.ExplainBytes(data)
 	if err != nil {
-		return jsErrorObj("explainStructure: " + err.Error())
+		return nil, err
 	}
 
-	fields := make([]structureField, 0, len(fm.Fields))
+	payload, err := marshalStructureMap(fm)
+	if err != nil {
+		return nil, fmt.Errorf("marshal: %w", err)
+	}
+	return payload, nil
+}
+
+func marshalStructureMap(fm *vdex.FieldMap) ([]byte, error) {
+	var out bytes.Buffer
+	out.Grow(min(len(fm.Fields)*128, 64<<20))
+	out.WriteString(`{"fields":[`)
+	encoder := json.NewEncoder(&out)
+	written := 0
 	for _, field := range fm.Fields {
 		if field == nil {
 			continue
@@ -112,22 +137,33 @@ func jsExplainStructure(_ js.Value, args []js.Value) any {
 		if field.Type == vdex.TypeBytes || field.Type == vdex.TypePadding {
 			parsedValue = nil
 		}
-		fields = append(fields, structureField{
+		if written > 0 {
+			out.WriteByte(',')
+		}
+		if err := encoder.Encode(structureField{
 			Offset:      field.Offset,
 			Size:        field.Size,
 			Type:        field.Type,
 			ParsedValue: parsedValue,
 			LogicalPath: field.LogicalPath,
 			Description: field.Description,
-		})
+		}); err != nil {
+			return nil, fmt.Errorf("field %d: %w", written, err)
+		}
+		written++
 	}
-
-	return jsonToJSObject(structureMap{
-		Fields:       fields,
-		TotalBytes:   fm.TotalBytes,
-		UnmappedGaps: fm.UnmappedGaps,
-		DexPreviews:  fm.DexPreviews,
-	})
+	out.WriteString(`],"total_bytes":`)
+	fmt.Fprintf(&out, "%d", fm.TotalBytes)
+	out.WriteString(`,"unmapped_gaps":`)
+	if err := encoder.Encode(fm.UnmappedGaps); err != nil {
+		return nil, fmt.Errorf("unmapped gaps: %w", err)
+	}
+	out.WriteString(`,"dex_previews":`)
+	if err := encoder.Encode(fm.DexPreviews); err != nil {
+		return nil, fmt.Errorf("DEX previews: %w", err)
+	}
+	out.WriteByte('}')
+	return out.Bytes(), nil
 }
 
 // jsParse implements window.vdex.parse(Uint8Array) → JS Object
