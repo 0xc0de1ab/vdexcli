@@ -53,22 +53,34 @@ func buildMinimalDex(stringIds, typeIds, protoIds, fieldIds, methodIds, classDef
 	binary.LittleEndian.PutUint32(dex[0x34:], uint32(mapOff))
 
 	binary.LittleEndian.PutUint32(dex[0x38:], uint32(stringIds))
-	binary.LittleEndian.PutUint32(dex[0x3C:], uint32(strOff))
+	if stringIds > 0 {
+		binary.LittleEndian.PutUint32(dex[0x3C:], uint32(strOff))
+	}
 
 	binary.LittleEndian.PutUint32(dex[0x40:], uint32(typeIds))
-	binary.LittleEndian.PutUint32(dex[0x44:], uint32(typOff))
+	if typeIds > 0 {
+		binary.LittleEndian.PutUint32(dex[0x44:], uint32(typOff))
+	}
 
 	binary.LittleEndian.PutUint32(dex[0x48:], uint32(protoIds))
-	binary.LittleEndian.PutUint32(dex[0x4C:], uint32(proOff))
+	if protoIds > 0 {
+		binary.LittleEndian.PutUint32(dex[0x4C:], uint32(proOff))
+	}
 
 	binary.LittleEndian.PutUint32(dex[0x50:], uint32(fieldIds))
-	binary.LittleEndian.PutUint32(dex[0x54:], uint32(fldOff))
+	if fieldIds > 0 {
+		binary.LittleEndian.PutUint32(dex[0x54:], uint32(fldOff))
+	}
 
 	binary.LittleEndian.PutUint32(dex[0x58:], uint32(methodIds))
-	binary.LittleEndian.PutUint32(dex[0x5C:], uint32(mthOff))
+	if methodIds > 0 {
+		binary.LittleEndian.PutUint32(dex[0x5C:], uint32(mthOff))
+	}
 
 	binary.LittleEndian.PutUint32(dex[0x60:], uint32(classDefs))
-	binary.LittleEndian.PutUint32(dex[0x64:], uint32(clsOff))
+	if classDefs > 0 {
+		binary.LittleEndian.PutUint32(dex[0x64:], uint32(clsOff))
+	}
 
 	binary.LittleEndian.PutUint32(dex[0x68:], uint32(fileSize-dataOff))
 	binary.LittleEndian.PutUint32(dex[0x6C:], uint32(dataOff))
@@ -684,6 +696,7 @@ func TestExplainVdexBytesClampsOverflowingDexSize(t *testing.T) {
 	copy(dex, "dex\n035\x00")
 	binary.LittleEndian.PutUint32(dex[0x20:], math.MaxUint32)
 	binary.LittleEndian.PutUint32(dex[0x24:], 112)
+	binary.LittleEndian.PutUint32(dex[0x28:], 0x12345678)
 	raw := wrapDexSectionWithoutChecksums(dex)
 
 	previewMap, err := ExplainVdexBytes(raw)

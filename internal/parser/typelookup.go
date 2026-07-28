@@ -2,10 +2,13 @@ package parser
 
 import (
 	"fmt"
+	"math/bits"
 
 	"github.com/0xc0de1ab/vdexcli/internal/binutil"
 	"github.com/0xc0de1ab/vdexcli/internal/model"
 )
+
+const maxTypeLookupRawSize = 1 << 19
 
 // ParseTypeLookupSection parses the kTypeLookupTableSection.
 // Each per-dex block starts with a uint32 raw-size followed by
@@ -60,13 +63,20 @@ func parseTypeLookupDex(raw []byte, dex *model.DexContext) model.TypeLookupDexRe
 		out.Warnings = append(out.Warnings, "empty payload")
 		return out
 	}
+	if len(raw) > maxTypeLookupRawSize {
+		out.Warnings = append(out.Warnings, fmt.Sprintf(
+			"payload size %d exceeds maximum valid type-lookup size %d; decode skipped",
+			len(raw),
+			maxTypeLookupRawSize,
+		))
+		return out
+	}
 	if len(raw)%8 != 0 {
 		out.Warnings = append(out.Warnings, "payload size is not aligned to 8-byte entries; last entry may be truncated")
 		raw = raw[:len(raw)-(len(raw)%8)]
 	}
 
 	buckets := len(raw) / 8
-	out.BucketCount = buckets
 	if buckets == 0 {
 		out.Warnings = append(out.Warnings, "empty table")
 		return out
@@ -81,15 +91,26 @@ func parseTypeLookupDex(raw []byte, dex *model.DexContext) model.TypeLookupDexRe
 	}
 	if classDefs > model.MaxTypeLookupClasses {
 		out.Warnings = append(out.Warnings, fmt.Sprintf("unsupported class_defs_size=%d", classDefs))
+		return out
 	}
+	if classDefs > 0 {
+		expectedBuckets := uint64(1) << bits.Len32(classDefs-1)
+		expectedSize := expectedBuckets * 8
+		if uint64(len(raw)) != expectedSize {
+			out.Warnings = append(out.Warnings, fmt.Sprintf(
+				"payload size %d does not match %d bytes expected for %d class definitions; decode skipped",
+				len(raw),
+				expectedSize,
+				classDefs,
+			))
+			return out
+		}
+	}
+	out.BucketCount = buckets
 	maskBits := uint32(0)
 	rawBits := uint32(0)
 	if classDefs > 0 {
-		capped := classDefs
-		if capped > model.MaxTypeLookupClasses {
-			capped = model.MaxTypeLookupClasses
-		}
-		rawBits = binutil.MinimumBitsToStore(capped - 1)
+		rawBits = binutil.MinimumBitsToStore(classDefs - 1)
 		maskBits = rawBits
 	}
 	if maskBits > 30 {

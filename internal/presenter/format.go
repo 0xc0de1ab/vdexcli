@@ -174,8 +174,9 @@ func WriteTable(w io.Writer, r *model.VdexReport) error {
 			}
 			out.printf("  [%d] %s  off=%#x  size=%d  endian=%s\n",
 				d.Index, c(boldCyn, magic+terminalSafe(d.Version)), d.Offset, d.Size, terminalSafe(d.Endian))
-			out.printf("      sha1=%s  checksum=%s\n",
-				c(dim, sigPreview), c(cyan, fmt.Sprintf("%#x", d.ChecksumId)))
+			out.printf("      sha1=%s (valid=%t)  checksum=%s (valid=%t)\n",
+				c(dim, sigPreview), d.SignatureValid,
+				c(cyan, fmt.Sprintf("%#x", d.ChecksumId)), d.ChecksumValid)
 			out.printf("      strings=%d types=%d protos=%d fields=%d methods=%d %s=%d\n",
 				d.StringIds, d.TypeIds, d.ProtoIds, d.FieldIds, d.MethodIds,
 				c(bold, "classes"), d.ClassDefs)

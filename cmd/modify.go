@@ -80,6 +80,9 @@ func runModify(cmd *cobra.Command, args []string) error {
 	if report == nil {
 		return parseErr
 	}
+	if err := validateModifyVersion(report); err != nil {
+		return err
+	}
 
 	// Step 2: Load and validate patch.
 	patch, err := loadPatch(m, report)
@@ -114,6 +117,20 @@ func runModify(cmd *cobra.Command, args []string) error {
 
 	// Step 8: Render output.
 	return renderModifyOutput(cmd, summary, originalSection, newPayload, failureCategory, failureReason, strictMatched, report, m, parseErr, compareErr, writeErr)
+}
+
+func validateModifyVersion(report *model.VdexReport) error {
+	if report == nil {
+		return fmt.Errorf("cannot modify an unparsed VDEX report")
+	}
+	if report.Header.Version != model.VdexCurrentVersion {
+		return fmt.Errorf(
+			"modify supports only VDEX v%s; input is v%s and uses an incompatible verifier encoding",
+			model.VdexCurrentVersion,
+			report.Header.Version,
+		)
+	}
+	return nil
 }
 
 // parseInput reads and parses the VDEX file, recording parse errors.
@@ -367,7 +384,7 @@ func printModifyText(s model.ModifySummary, section model.VdexSection, newPayloa
 	}
 	delta := len(newPayload) - int(section.Size)
 	fmt.Printf("modify summary: mode=%s patch_dexes=%d patch_classes=%d patch_extra_strings=%d\n",
-		s.Mode, s.PatchDexes, s.PatchClasses, s.PatchExtraStrings)
+		presenter.TerminalSafe(s.Mode), s.PatchDexes, s.PatchClasses, s.PatchExtraStrings)
 	fmt.Printf("modify diff: classes=%d modified=%d unchanged=%d change=%.2f%%\n",
 		s.TotalClasses, s.ModifiedClasses, s.UnmodifiedClasses, s.ClassChangePercent)
 
@@ -393,9 +410,13 @@ func printModifyText(s model.ModifySummary, section model.VdexSection, newPayloa
 		}
 	}
 
-	fmt.Printf("modify status: %s\n", s.Status)
+	fmt.Printf("modify status: %s\n", presenter.TerminalSafe(s.Status))
 	if failureCategory != "" {
-		fmt.Printf("modify failure: %s — %s\n", failureCategory, failureReason)
+		fmt.Printf(
+			"modify failure: %s — %s\n",
+			presenter.TerminalSafe(failureCategory),
+			presenter.TerminalSafe(failureReason),
+		)
 	}
 	fmt.Printf("verifier section size: old=%d new=%d delta=%+d\n", section.Size, len(newPayload), delta)
 
@@ -403,9 +424,9 @@ func printModifyText(s model.ModifySummary, section model.VdexSection, newPayloa
 	case m.DryRun:
 		fmt.Println("modify output: dry-run (no file written)")
 	case s.Status != "ok":
-		fmt.Printf("modify output: skipped due to %s\n", s.Status)
+		fmt.Printf("modify output: skipped due to %s\n", presenter.TerminalSafe(s.Status))
 	default:
-		fmt.Printf("modify output: wrote %s\n", s.OutputFile)
+		fmt.Printf("modify output: wrote %s\n", presenter.TerminalSafe(s.OutputFile))
 	}
 
 	if len(report.Warnings) > 0 && (!m.Quiet || s.Status != "ok") {

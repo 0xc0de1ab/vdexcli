@@ -84,7 +84,7 @@ func Execute() {
 	}
 
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintln(os.Stderr, presenter.TerminalSafe(err.Error()))
 		os.Exit(1)
 	}
 }

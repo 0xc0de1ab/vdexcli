@@ -81,7 +81,7 @@ func DecodeCStringOffsets(raw []byte, offsets []int, minOffset, endOffset int) (
 
 	for i, off := range unique {
 		if off < minOffset || off >= endOffset {
-			failures[off] = fmt.Errorf("C-string offset %#x outside [%#x,%#x)", off, minOffset, endOffset)
+			failures[off] = fmt.Errorf("c-string offset %#x outside [%#x,%#x)", off, minOffset, endOffset)
 			continue
 		}
 		limit := endOffset
@@ -89,12 +89,12 @@ func DecodeCStringOffsets(raw []byte, offsets []int, minOffset, endOffset int) (
 			limit = unique[i+1]
 		}
 		if limit <= off {
-			failures[off] = fmt.Errorf("C-string offset %#x has no available data", off)
+			failures[off] = fmt.Errorf("c-string offset %#x has no available data", off)
 			continue
 		}
 		n := bytes.IndexByte(raw[off:limit], 0)
 		if n < 0 {
-			failures[off] = fmt.Errorf("C-string at %#x overlaps the next entry or is unterminated", off)
+			failures[off] = fmt.Errorf("c-string at %#x overlaps the next entry or is unterminated", off)
 			continue
 		}
 		decoded[off] = string(raw[off : off+n])

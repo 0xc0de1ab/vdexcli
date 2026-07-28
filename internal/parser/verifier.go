@@ -1,10 +1,17 @@
 package parser
 
 import (
+	"bytes"
 	"fmt"
 
 	"github.com/0xc0de1ab/vdexcli/internal/binutil"
 	"github.com/0xc0de1ab/vdexcli/internal/model"
+)
+
+const (
+	maxVerifierPairsScanned   = 1_000_000
+	maxVerifierExtraStrings   = 250_000
+	maxVerifierOffsetWarnings = 64
 )
 
 // ParseVerifierSection parses the kVerifierDepsSection. The section
@@ -104,7 +111,7 @@ func parseVerifierDex(raw []byte, sectionStart int, blockStart int, blockEnd int
 
 	// When DEX section is absent (DM format), class_def_count is unknown.
 	// Infer it from the verifier block's class offset table structure.
-	if numClass == 0 && blockStart < blockEnd {
+	if dexIdx >= len(dexes) && blockStart < blockEnd {
 		inferred := inferClassCount(raw, sectionStart, blockStart, blockEnd)
 		if inferred > 0 {
 			numClass = inferred
@@ -132,7 +139,7 @@ func parseVerifierDex(raw []byte, sectionStart int, blockStart int, blockEnd int
 	type rawPair struct {
 		class, dest, src uint32
 	}
-	var pairs []rawPair
+	pairs := make([]rawPair, 0, model.MaxVerifierPairs)
 
 	// Offsets in the class-def table are section-absolute, matching ART's
 	// EncodeSetVector / DecodeSetVector encoding.
@@ -156,7 +163,7 @@ func parseVerifierDex(raw []byte, sectionStart int, blockStart int, blockEnd int
 		}
 		setStart64 := uint64(sectionStart) + uint64(o)
 		setEnd64 := uint64(sectionStart) + uint64(offsets[nextValid])
-		if setStart64 < uint64(blockStart) ||
+		if setStart64 < tableEnd64 ||
 			setEnd64 > uint64(blockEnd) ||
 			setEnd64 < setStart64 {
 			diags = append(diags, model.DiagVerifierMalformedBounds(dexIdx, classIdx))
@@ -169,6 +176,13 @@ func parseVerifierDex(raw []byte, sectionStart int, blockStart int, blockEnd int
 			maxSetEnd = cursor
 		}
 		for cursor < setEnd {
+			if out.AssignabilityPairs >= maxVerifierPairsScanned {
+				diags = append(diags, model.DiagVerifierWorkLimit(
+					dexIdx,
+					fmt.Sprintf("more than %d assignability pairs", maxVerifierPairsScanned),
+				))
+				return out, diags
+			}
 			dest, n, err := binutil.ReadULEB128(raw[:setEnd], cursor)
 			if err != nil {
 				diags = append(diags, model.DiagVerifierInvalidLEB128(dexIdx, classIdx, "destination"))
@@ -181,7 +195,9 @@ func parseVerifierDex(raw []byte, sectionStart int, blockStart int, blockEnd int
 				break
 			}
 			cursor += n
-			pairs = append(pairs, rawPair{class: uint32(classIdx), dest: dest, src: src})
+			if len(pairs) < model.MaxVerifierPairs {
+				pairs = append(pairs, rawPair{class: uint32(classIdx), dest: dest, src: src})
+			}
 			out.AssignabilityPairs++
 		}
 		if setEnd > maxSetEnd {
@@ -192,6 +208,7 @@ func parseVerifierDex(raw []byte, sectionStart int, blockStart int, blockEnd int
 	cursor := binutil.Align4(maxSetEnd)
 	if cursor < maxSetEnd || cursor+4 > blockEnd {
 		out.ExtraStringCount = 0
+		diags = append(diags, model.DiagVerifierExtrasTruncated(dexIdx))
 		return out, diags
 	}
 	numStringsValue := binutil.ReadU32(raw, cursor)
@@ -203,56 +220,105 @@ func parseVerifierDex(raw []byte, sectionStart int, blockStart int, blockEnd int
 		return out, diags
 	}
 	numStrings := int(numStringsValue)
+	if numStrings > maxVerifierExtraStrings {
+		diags = append(diags, model.DiagVerifierWorkLimit(
+			dexIdx,
+			fmt.Sprintf("%d extra strings exceeds limit %d", numStrings, maxVerifierExtraStrings),
+		))
+		out.ExtraStringCount = numStrings
+		return out, diags
+	}
 
-	extras := make([]string, numStrings)
-	relativeOffsets := make([]uint32, numStrings)
-	absoluteOffsets := make([]int, numStrings)
-	for i := 0; i < numStrings; i++ {
-		// Extra string offsets are section-absolute.
-		rel := binutil.ReadU32(raw, cursor+i*4)
-		relativeOffsets[i] = rel
-		abs64 := uint64(sectionStart) + uint64(rel)
-		if abs64 > uint64(^uint(0)>>1) {
-			absoluteOffsets[i] = -1
-		} else {
-			absoluteOffsets[i] = int(abs64)
-		}
-	}
-	decodedExtras, failures := binutil.DecodeCStringOffsets(
-		raw,
-		absoluteOffsets,
-		int(extrasEnd64),
-		blockEnd,
-	)
-	for i, abs := range absoluteOffsets {
-		if value, ok := decodedExtras[abs]; ok {
-			extras[i] = value
-			continue
-		}
-		extras[i] = fmt.Sprintf("invalid_%d", i)
-		if _, failed := failures[abs]; failed {
-			diags = append(diags, model.DiagVerifierExtraInvalid(
-				dexIdx,
-				i,
-				diagnosticOffset(relativeOffsets[i]),
-			))
-		}
-	}
-	out.ExtraStringCount = len(extras)
+	out.ExtraStringCount = numStrings
 
 	extraBase := uint32(len(baseStrings))
+	neededExtras := make(map[uint32]struct{})
+	for _, pair := range pairs {
+		for _, id := range []uint32{pair.dest, pair.src} {
+			if id >= extraBase && uint64(id-extraBase) < uint64(numStringsValue) {
+				neededExtras[id-extraBase] = struct{}{}
+			}
+		}
+	}
+	extras := make(map[uint32]string)
+	invalidWarnings := 0
+	for index := 0; index < numStrings; index++ {
+		relative := binutil.ReadU32(raw, cursor+index*4)
+		absolute64 := uint64(sectionStart) + uint64(relative)
+		if absolute64 < extrasEnd64 || absolute64 >= uint64(blockEnd) {
+			if invalidWarnings < maxVerifierOffsetWarnings {
+				diags = append(diags, model.DiagVerifierExtraInvalid(
+					dexIdx,
+					index,
+					diagnosticOffset(relative),
+				))
+				invalidWarnings++
+			}
+			if _, needed := neededExtras[uint32(index)]; needed {
+				extras[uint32(index)] = fmt.Sprintf("invalid_%d", index)
+			}
+			continue
+		}
+		if _, needed := neededExtras[uint32(index)]; !needed {
+			continue
+		}
+		absolute := int(absolute64)
+		value, ok := decodeVerifierCString(raw, absolute, blockEnd)
+		if !ok {
+			if invalidWarnings < maxVerifierOffsetWarnings {
+				diags = append(diags, model.DiagVerifierExtraInvalid(
+					dexIdx,
+					index,
+					diagnosticOffset(relative),
+				))
+				invalidWarnings++
+			}
+			extras[uint32(index)] = fmt.Sprintf("invalid_%d", index)
+			continue
+		}
+		extras[uint32(index)] = value
+	}
+
 	for i := 0; i < len(pairs) && i < model.MaxVerifierPairs; i++ {
 		p := pairs[i]
 		out.FirstPairs = append(out.FirstPairs, model.VerifierPair{
 			ClassDefIndex: p.class,
 			DestID:        p.dest,
-			Dest:          resolveVerifierString(baseStrings, extras, extraBase, p.dest),
+			Dest:          resolveVerifierStringSparse(baseStrings, extras, extraBase, p.dest),
 			SrcID:         p.src,
-			Src:           resolveVerifierString(baseStrings, extras, extraBase, p.src),
+			Src:           resolveVerifierStringSparse(baseStrings, extras, extraBase, p.src),
 		})
 	}
 
 	return out, diags
+}
+
+func decodeVerifierCString(raw []byte, offset, blockEnd int) (string, bool) {
+	const maxVerifierStringBytes = 1 << 20
+	if offset < 0 || offset >= blockEnd || blockEnd > len(raw) {
+		return "", false
+	}
+	limit := blockEnd
+	if maxEnd := offset + maxVerifierStringBytes; maxEnd > offset && maxEnd < limit {
+		limit = maxEnd
+	}
+	end := bytes.IndexByte(raw[offset:limit], 0)
+	if end < 0 {
+		return "", false
+	}
+	return string(raw[offset : offset+end]), true
+}
+
+func resolveVerifierStringSparse(dexStrings []string, extras map[uint32]string, extraBase uint32, id uint32) string {
+	if uint64(id) < uint64(len(dexStrings)) {
+		return dexStrings[int(id)]
+	}
+	if id >= extraBase {
+		if value, ok := extras[id-extraBase]; ok {
+			return value
+		}
+	}
+	return fmt.Sprintf("string_%d", id)
 }
 
 // inferClassCount determines class_def_count from the verifier block's

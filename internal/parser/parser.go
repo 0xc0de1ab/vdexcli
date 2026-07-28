@@ -77,7 +77,13 @@ func ParseVdexBytes(data []byte, includeMeanings bool) (*model.VdexReport, []byt
 	sections, secIndex, secDiags := ParseSections(raw[12:headerEnd], r.Header.NumSections)
 	r.AddDiags(secDiags)
 	r.Sections = sections
-	r.AddDiags(ValidateSections(len(raw), sections))
+	sectionDiags := ValidateSections(len(raw), sections, headerEnd64)
+	r.AddDiags(sectionDiags)
+	for _, d := range sectionDiags {
+		if d.Severity == model.SeverityError {
+			return r, raw, fmt.Errorf("parse: invalid section layout: %s", d.Message)
+		}
+	}
 
 	r.Checksums = parseChecksums(raw, sections, secIndex, r)
 
@@ -112,6 +118,11 @@ func ParseVdexBytes(data []byte, includeMeanings bool) (*model.VdexReport, []byt
 		rep, ds := ParseTypeLookupSection(raw, sections[idx], dexContexts, expected)
 		r.TypeLookup = rep
 		r.AddDiags(ds)
+		for _, dexReport := range rep.Dexes {
+			for _, warning := range dexReport.Warnings {
+				r.AddDiag(model.DiagTypeLookupDecode(dexReport.DexIndex, warning))
+			}
+		}
 	}
 
 	r.Coverage = ComputeByteCoverage(len(raw), r.Header, r.Sections, r.Dexes)

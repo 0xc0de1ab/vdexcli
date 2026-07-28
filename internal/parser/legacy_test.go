@@ -85,6 +85,51 @@ func TestParseVdexLegacy_MultiDex(t *testing.T) {
 	assert.Equal(t, uint32(0xCAFE0002), report.Checksums[2])
 }
 
+func TestParseVdexLegacy_AcceptsEmptyDexSectionVersion(t *testing.T) {
+	raw := buildLegacyVdex("024", 1, 4)
+	copy(raw[8:12], "000\x00")
+	dexHeaderOffset := legacyHeaderSize + 4
+	raw = append(raw[:dexHeaderOffset], raw[dexHeaderOffset+dexSectionHeaderSize:]...)
+
+	report, _, err := ParseVdexLegacyBytes(raw, false)
+
+	require.NoError(t, err)
+	assert.Empty(t, report.Dexes)
+	require.NotEmpty(t, report.Sections)
+}
+
+func TestParseVdexLegacy_RejectsUnknownDexSectionVersion(t *testing.T) {
+	raw := buildLegacyVdex("024", 1, 0)
+	copy(raw[8:12], "999\x00")
+
+	report, _, err := ParseVdexLegacyBytes(raw, false)
+
+	require.Error(t, err)
+	require.NotEmpty(t, report.Diagnostics)
+	assert.Equal(t, model.ErrLegacyDexSectionVer, report.Diagnostics[len(report.Diagnostics)-1].Code)
+}
+
+func TestParseVdexLegacy_ReportsCompactDexExplicitly(t *testing.T) {
+	raw := buildLegacyVdex("024", 1, 0)
+	dexHeaderOffset := legacyHeaderSize + 4
+	dexOffset := dexHeaderOffset + dexSectionHeaderSize
+	binary.LittleEndian.PutUint32(raw[dexHeaderOffset:], 0x70)
+	raw = append(raw, make([]byte, 0x70)...)
+	copy(raw[dexOffset:], "cdex")
+
+	report, _, err := ParseVdexLegacyBytes(raw, false)
+
+	require.NoError(t, err)
+	require.NotEmpty(t, report.Diagnostics)
+	found := false
+	for _, diagnostic := range report.Diagnostics {
+		if diagnostic.Code == model.WarnCompactDexUnsupported {
+			found = true
+		}
+	}
+	assert.True(t, found)
+}
+
 func TestParseVdexLegacy_TooSmall(t *testing.T) {
 	raw := []byte("vdex021")
 	tmpFile := filepath.Join(t.TempDir(), "tiny.vdex")
@@ -169,6 +214,10 @@ func TestParseLegacy_SkipsDexSharedDataBeforeVerifier(t *testing.T) {
 	require.NotNil(t, verifier)
 	assert.Equal(t, uint32(verifierOffset+4), verifier.Offset)
 	assert.Equal(t, uint32(8), verifier.Size)
+	require.NotNil(t, report.Coverage)
+	assert.Equal(t, len(withShared), report.Coverage.ParsedBytes)
+	assert.Zero(t, report.Coverage.UnparsedBytes)
+	assert.Empty(t, report.Coverage.Gaps)
 }
 
 func TestParseLegacy_WarnsAboutLimitedSupport(t *testing.T) {

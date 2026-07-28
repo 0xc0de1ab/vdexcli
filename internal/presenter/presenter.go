@@ -156,7 +156,8 @@ func PrintText(r *model.VdexReport) {
 	for _, d := range r.Dexes {
 		fmt.Printf("  [%d] off=%#x size=%#x magic=%q ver=%q endian=%s file_size=%d header=%d\n",
 			d.Index, d.Offset, d.Size, d.Magic, d.Version, d.Endian, d.FileSize, d.HeaderSize)
-		fmt.Printf("     sha1=%s checksum=%#x\n", d.Signature, d.ChecksumId)
+		fmt.Printf("     sha1=%s (valid=%t) checksum=%#x (valid=%t)\n",
+			d.Signature, d.SignatureValid, d.ChecksumId, d.ChecksumValid)
 		fmt.Printf("     strings=%d(@%#x) types=%d(@%#x) protos=%d(@%#x) fields=%d(@%#x) methods=%d(@%#x) class_defs=%d(@%#x)\n",
 			d.StringIds, d.StringIdsOff, d.TypeIds, d.TypeIdsOff,
 			d.ProtoIds, d.ProtoIdsOff, d.FieldIds, d.FieldIdsOff,

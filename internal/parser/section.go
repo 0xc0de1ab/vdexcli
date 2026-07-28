@@ -62,9 +62,9 @@ func ParseSections(buf []byte, count uint32) ([]model.VdexSection, map[uint32]in
 	return sections, index, diags
 }
 
-// ValidateSections checks every section's offset/size against the file size
-// and detects overlaps between sections.
-func ValidateSections(fileSize int, sections []model.VdexSection) []model.ParseDiagnostic {
+// ValidateSections checks every section's offset/size against the file size,
+// the optional header/table end, and other sections.
+func ValidateSections(fileSize int, sections []model.VdexSection, headerEnds ...uint64) []model.ParseDiagnostic {
 	type sectionRange struct {
 		section model.VdexSection
 		index   int
@@ -84,6 +84,10 @@ func ValidateSections(fileSize int, sections []model.VdexSection) []model.ParseD
 
 	ranges := make([]sectionRange, 0, len(sections))
 	fileEnd := uint64(max(fileSize, 0))
+	headerEnd := uint64(0)
+	if len(headerEnds) > 0 {
+		headerEnd = headerEnds[0]
+	}
 	for i, s := range sections {
 		start := uint64(s.Offset)
 		end := start + uint64(s.Size)
@@ -97,6 +101,10 @@ func ValidateSections(fileSize int, sections []model.VdexSection) []model.ParseD
 		}
 		if s.Size == 0 {
 			appendDiag(model.DiagSectionZeroSize(s.Kind))
+			continue
+		}
+		if start < headerEnd {
+			appendDiag(model.DiagSectionHeaderOverlap(s.Kind, s.Offset, headerEnd))
 			continue
 		}
 		ranges = append(ranges, sectionRange{section: s, index: i, start: start, end: end})

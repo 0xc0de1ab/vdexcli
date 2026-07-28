@@ -76,7 +76,7 @@ func printDetailedField(w io.Writer, f *model.PrimitiveField) error {
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(w, "%-14s %s\n", "Logical Path:", c(bold, f.LogicalPath))
+	_, err = fmt.Fprintf(w, "%-14s %s\n", "Logical Path:", c(bold, terminalSafe(f.LogicalPath)))
 	if err != nil {
 		return err
 	}
@@ -88,7 +88,7 @@ func printDetailedField(w io.Writer, f *model.PrimitiveField) error {
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(w, "%-14s %s\n", "Type:", c(colorForType(f.Type), string(f.Type)))
+	_, err = fmt.Fprintf(w, "%-14s %s\n", "Type:", c(colorForType(f.Type), terminalSafe(string(f.Type))))
 	if err != nil {
 		return err
 	}
@@ -96,16 +96,16 @@ func printDetailedField(w io.Writer, f *model.PrimitiveField) error {
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(w, "%-14s %s\n", "Value:", formatValue(f))
+	_, err = fmt.Fprintf(w, "%-14s %s\n", "Value:", terminalSafe(formatValue(f)))
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(w, "%-14s %s\n", "Summary:", f.Summary)
+	_, err = fmt.Fprintf(w, "%-14s %s\n", "Summary:", terminalSafe(f.Summary))
 	if err != nil {
 		return err
 	}
 	if f.Description != "" {
-		_, err = fmt.Fprintf(w, "%-14s %s\n", "Description:", f.Description)
+		_, err = fmt.Fprintf(w, "%-14s %s\n", "Description:", terminalSafe(f.Description))
 		if err != nil {
 			return err
 		}
@@ -127,8 +127,8 @@ func printExplainTable(w io.Writer, pm *model.PrimitiveMap) error {
 	for _, f := range pm.Fields {
 		offsetStr := c(dim, fmt.Sprintf("0x%08x", f.Offset))
 		hexDump := hexDumpPreview(f.RawBytes)
-		primType := string(f.Type)
-		valStr := formatValue(f)
+		primType := terminalSafe(string(f.Type))
+		valStr := terminalSafe(formatValue(f))
 
 		// For Offset, it is colored. Its uncolored length is 10. We print colored offset and 2 spaces.
 		offsetPart := fmt.Sprintf("%s  ", offsetStr)
@@ -140,7 +140,7 @@ func printExplainTable(w io.Writer, pm *model.PrimitiveMap) error {
 		primPart := fmt.Sprintf("%s  ", c(colorForType(f.Type), fmt.Sprintf("%-13s", primType)))
 
 		// Path is padded to 27 chars, then print value
-		_, err = fmt.Fprintf(w, "%s%s%s%-27s -> %s\n", offsetPart, hexPart, primPart, f.LogicalPath, valStr)
+		_, err = fmt.Fprintf(w, "%s%s%s%-27s -> %s\n", offsetPart, hexPart, primPart, terminalSafe(f.LogicalPath), valStr)
 		if err != nil {
 			return err
 		}

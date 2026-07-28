@@ -15,6 +15,14 @@ const legacyHeaderSize = 28
 // dexSectionHeaderSize is the optional DexSectionHeader (v002).
 const dexSectionHeaderSize = 12
 
+const (
+	legacySectionDexHeader uint32 = 0x10000 + iota
+	legacySectionDexSharedData
+	legacySectionQuickening
+	legacySectionBCPChecksums
+	legacySectionClassLoaderContext
+)
+
 // IsLegacyVersion returns true for VDEX versions 021-026.
 func IsLegacyVersion(version string) bool {
 	switch version {
@@ -91,6 +99,11 @@ func ParseVdexLegacyBytes(data []byte, includeMeanings bool) (*model.VdexReport,
 	if !IsLegacyVersion(h.Version) {
 		r.AddDiag(model.DiagVersionMismatch("021-026", h.Version))
 	}
+	if lf.dexSectionVersion != "000" && lf.dexSectionVersion != "002" {
+		d := model.DiagLegacyDexSectionVersion(lf.dexSectionVersion)
+		r.AddDiag(d)
+		return r, raw, d
+	}
 
 	// Build synthetic sections from header fields for consistent reporting.
 	cursor := legacyHeaderSize
@@ -134,6 +147,7 @@ func ParseVdexLegacyBytes(data []byte, includeMeanings bool) (*model.VdexReport,
 	// Optional DexSectionHeader (dex_section_version == "002").
 	var dexSize, dexSharedDataSize, quickeningSize uint32
 	if lf.dexSectionVersion == "002" {
+		dexHeaderStart := cursor
 		if uint64(cursor)+dexSectionHeaderSize > uint64(len(raw)) {
 			d := model.ParseDiagnostic{
 				Severity: model.SeverityError,
@@ -149,6 +163,10 @@ func ParseVdexLegacyBytes(data []byte, includeMeanings bool) (*model.VdexReport,
 		dexSharedDataSize = binary.LittleEndian.Uint32(raw[cursor+4:])
 		quickeningSize = binary.LittleEndian.Uint32(raw[cursor+8:])
 		cursor += dexSectionHeaderSize
+		r.Sections = append(r.Sections, model.VdexSection{
+			Kind: legacySectionDexHeader, Offset: uint32(dexHeaderStart), Size: dexSectionHeaderSize,
+			Name: "DexSectionHeader (legacy)", Meaning: "Legacy DEX, shared-data, and quickening size fields",
+		})
 	}
 
 	// DEX section.
@@ -178,8 +196,15 @@ func ParseVdexLegacyBytes(data []byte, includeMeanings bool) (*model.VdexReport,
 		}
 		cursor = dexEnd
 	}
+	sharedStart := cursor
 	if !advance(dexSharedDataSize, "DEX shared-data section") {
 		return r, raw, r.Diagnostics[len(r.Diagnostics)-1]
+	}
+	if dexSharedDataSize > 0 {
+		r.Sections = append(r.Sections, model.VdexSection{
+			Kind: legacySectionDexSharedData, Offset: uint32(sharedStart), Size: dexSharedDataSize,
+			Name: "DEX shared data (legacy)", Meaning: "Shared compact DEX data payload",
+		})
 	}
 
 	// Verifier deps section.
@@ -196,18 +221,39 @@ func ParseVdexLegacyBytes(data []byte, includeMeanings bool) (*model.VdexReport,
 	}
 
 	// Quickening info (skip, not parsed).
+	quickeningStart := cursor
 	if !advance(quickeningSize, "quickening-info section") {
 		return r, raw, r.Diagnostics[len(r.Diagnostics)-1]
 	}
+	if quickeningSize > 0 {
+		r.Sections = append(r.Sections, model.VdexSection{
+			Kind: legacySectionQuickening, Offset: uint32(quickeningStart), Size: quickeningSize,
+			Name: "Quickening info (legacy)", Meaning: "Raw legacy quickening payload",
+		})
+	}
 
 	// Boot classpath checksums (skip).
+	bcpStart := cursor
 	if !advance(lf.bcpChecksumsSize, "boot-classpath checksum data") {
 		return r, raw, r.Diagnostics[len(r.Diagnostics)-1]
 	}
+	if lf.bcpChecksumsSize > 0 {
+		r.Sections = append(r.Sections, model.VdexSection{
+			Kind: legacySectionBCPChecksums, Offset: uint32(bcpStart), Size: lf.bcpChecksumsSize,
+			Name: "Boot classpath checksums (legacy)", Meaning: "Raw boot classpath checksum payload",
+		})
+	}
 
 	// Class loader context (skip).
+	clcStart := cursor
 	if !advance(lf.clcSize, "class-loader context data") {
 		return r, raw, r.Diagnostics[len(r.Diagnostics)-1]
+	}
+	if lf.clcSize > 0 {
+		r.Sections = append(r.Sections, model.VdexSection{
+			Kind: legacySectionClassLoaderContext, Offset: uint32(clcStart), Size: lf.clcSize,
+			Name: "Class loader context (legacy)", Meaning: "Raw class loader context payload",
+		})
 	}
 	_ = cursor
 
@@ -215,8 +261,8 @@ func ParseVdexLegacyBytes(data []byte, includeMeanings bool) (*model.VdexReport,
 		Severity: model.SeverityWarning,
 		Category: model.CatHeader,
 		Code:     model.WarnVersionMismatch,
-		Message:  fmt.Sprintf("VDEX v%s: legacy format parsed with limited support (no type-lookup, quickening skipped)", h.Version),
-		Hint:     "verifier deps and DEX extraction work; type lookup tables are not available in this format",
+		Message:  fmt.Sprintf("VDEX v%s: legacy byte ranges mapped with limited semantic decoding", h.Version),
+		Hint:     "compact DEX, verifier deps, quickening, and class-loader payloads are reported as raw ranges; use Android ART tools for semantic decoding",
 	})
 
 	r.Coverage = ComputeByteCoverage(len(raw), r.Header, r.Sections, r.Dexes)

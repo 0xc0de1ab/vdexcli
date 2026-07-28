@@ -58,6 +58,52 @@ func TestExplainVdex_Minimal(t *testing.T) {
 	assert.Equal(t, uint32(4), pm.Fields[0].Size)
 }
 
+func TestExplainVdex_Dex041ContainerRelativeOffsets(t *testing.T) {
+	const (
+		dexSectionOffset = 68
+		containerSize    = 248
+		secondHeader     = 120
+	)
+	container := make([]byte, containerSize)
+	writeHeader := func(at, fileSize uint32) {
+		copy(container[at:at+8], "dex\n041\x00")
+		binary.LittleEndian.PutUint32(container[at+0x20:], fileSize)
+		binary.LittleEndian.PutUint32(container[at+0x24:], 0x78)
+		binary.LittleEndian.PutUint32(container[at+0x28:], 0x12345678)
+		binary.LittleEndian.PutUint32(container[at+0x70:], containerSize)
+		binary.LittleEndian.PutUint32(container[at+0x74:], at)
+	}
+	writeHeader(0, secondHeader)
+	writeHeader(secondHeader, containerSize-secondHeader)
+	binary.LittleEndian.PutUint32(container[0x38:], 1)
+	binary.LittleEndian.PutUint32(container[0x3C:], 240)
+	binary.LittleEndian.PutUint32(container[240:], 244)
+	container[244] = 2
+	copy(container[245:], "ok\x00")
+
+	header := buildRawHeader("vdex", "027\x00", 4)
+	var sections []byte
+	sections = appendSectionHeader(sections, 0, 60, 8)
+	sections = appendSectionHeader(sections, 1, dexSectionOffset, containerSize)
+	sections = appendSectionHeader(sections, 2, dexSectionOffset+containerSize, 0)
+	sections = appendSectionHeader(sections, 3, dexSectionOffset+containerSize, 0)
+	raw := append(header, sections...)
+	raw = append(raw, make([]byte, 8)...)
+	raw = append(raw, container...)
+
+	pm, err := ExplainVdexBytes(raw)
+
+	require.NoError(t, err)
+	require.NotNil(t, pm)
+	var paths []string
+	for _, field := range pm.Fields {
+		paths = append(paths, field.LogicalPath)
+	}
+	assert.Contains(t, paths, "vdex.dex[0].header.container_size")
+	assert.Contains(t, paths, "vdex.dex[1].header.header_offset")
+	assert.Contains(t, paths, "vdex.dex[0].string_ids[0]")
+}
+
 func TestExplainVdex_Comprehensive(t *testing.T) {
 	// Build a mock VDEX file with sections: Checksums, Dex, VerifierDeps, TypeLookup
 	// 1. DEX Section data

@@ -38,14 +38,15 @@ func ParseClassDefs(
 	for i := 0; i < classCount; i++ {
 		base := classOffset + i*32
 		classTypeIdx := int(binutil.ReadU32(raw, base))
-		desc := fmt.Sprintf("<invalid class_idx=%d>", classTypeIdx)
-		if classTypeIdx >= 0 && classTypeIdx < typeCount {
-			typeIdxOff := typeOffset + classTypeIdx*4
-			stringIdx := int(binutil.ReadU32(raw, typeIdxOff))
-			if stringIdx >= 0 && stringIdx < len(strs) {
-				desc = strs[stringIdx]
-			}
+		if classTypeIdx < 0 || classTypeIdx >= typeCount {
+			return out, fmt.Errorf("dex: class_def[%d] class_idx %d outside type_ids count %d", i, classTypeIdx, typeCount)
 		}
+		typeIdxOff := typeOffset + classTypeIdx*4
+		stringIdx := int(binutil.ReadU32(raw, typeIdxOff))
+		if stringIdx < 0 || stringIdx >= len(strs) {
+			return out, fmt.Errorf("dex: type_id[%d] descriptor_idx %d outside string_ids count %d", classTypeIdx, stringIdx, len(strs))
+		}
+		desc := strs[stringIdx]
 		if i < model.MaxClassPreview {
 			out = append(out, desc)
 		}
